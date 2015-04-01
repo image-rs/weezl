@@ -101,12 +101,11 @@ macro_rules! define_decoder_struct {
 $( // START struct definition
 
 #[$doc]
-///
 /// The maximum supported code length is 16 bits. The decoder assumes two
 /// special code word to be present in the stream:
 ///
 ///  * `CLEAR_CODE == 1 << min_code_size`
-///  * `END_CODE == CLEAR_CODE + 1`  a
+///  * `END_CODE == CLEAR_CODE + 1`
 ///
 /// Furthermore the decoder expects the stream to start with a `CLEAR_CODE`. This
 /// corresponds to the implementation needed for en- and decoding GIF and TIFF files.
