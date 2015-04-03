@@ -1,6 +1,3 @@
-#![feature(io)] 
-#![unstable]
-
 mod lzw;
 mod bitstream;
 

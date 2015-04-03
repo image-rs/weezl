@@ -1,6 +1,6 @@
 [package]
 name = "lzw"
-version = "0.1.0"
+version = "0.2.0"
 license = "MIT"
 description = "LZW compression and decompression."
 authors = ["nwin <nwin@users.noreply.github.com>"]
