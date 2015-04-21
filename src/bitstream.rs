@@ -229,6 +229,6 @@ mod test {
                 let _  = writer.write_bits(datum, 10);
             }
         }
-        assert_eq!(&data, &compressed_data)
+        assert_eq!(&data[..], &compressed_data[..])
     }
 }
