@@ -2,8 +2,8 @@ mod lzw;
 mod bitstream;
 
 pub use lzw::{
-    LzwDecoder,
-    LzwDecoderEarlyChange,
+    Decoder,
+    DecoderEarlyChange,
     encode
 };
 

@@ -198,8 +198,8 @@ impl<R> $name<R> where R: BitReader {
 }
 
 define_decoder_struct!{
-    LzwDecoder, 0, #[doc = "Decodes a lzw compressed stream (this algorithm is used for GIF files)."];
-    LzwDecoderEarlyChange, 1, #[doc = "Decodes a lzw compressed stream using an “early change” algorithm (used in TIFF files)."];
+    Decoder, 0, #[doc = "Decodes a lzw compressed stream (this algorithm is used for GIF files)."];
+    DecoderEarlyChange, 1, #[doc = "Decodes a lzw compressed stream using an “early change” algorithm (used in TIFF files)."];
 }
 
 struct Node {
@@ -305,7 +305,6 @@ impl EncodingDict {
 }
 
 /// Convenience function that reads and compresses all bytes from `R`.
-#[unstable]
 pub fn encode<R, W>(r: R, mut w: W, min_code_size: u8) -> io::Result<()>
 where R: Read, W: BitWriter {
     let mut dict = EncodingDict::new(min_code_size);
