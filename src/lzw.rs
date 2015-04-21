@@ -347,6 +347,98 @@ where R: Read, W: BitWriter {
     Ok(())
 }
 
+/// LZW encoder
+pub struct Encoder<W: BitWriter> {
+    w: W,
+    dict: EncodingDict,
+    min_code_size: u8,
+    code_size: u8,
+    i: Option<Code>
+}
+
+impl<W: BitWriter> Encoder<W> {
+    /// Creates a new lzw encoder
+    ///
+    /// *None*: If `min_code_size < 8` `Self::encode_bytes` might panic if
+    /// the supplied data exceeds `1 << min_code_size`.
+    pub fn new(mut w: W, min_code_size: u8) -> io::Result<Encoder<W>> {
+        let mut dict = EncodingDict::new(min_code_size);
+        dict.push_node(Node::new(0)); // clear code
+        dict.push_node(Node::new(0)); // end code
+        let code_size = min_code_size + 1;
+        try!(w.write_bits(dict.clear_code(), code_size));
+        Ok(Encoder {
+            w: w,
+            dict: dict,
+            min_code_size: min_code_size,
+            code_size: code_size,
+            i: None
+        })
+    }
+    
+    /// Encodes `bytes`
+    ///
+    /// ## Panics
+    ///
+    /// This function may panic if any of the input bytes exceeds `1 << min_code_size`.
+    pub fn encode_bytes(&mut self, bytes: &[u8]) -> io::Result<()> {
+        let w = &mut self.w;
+        let dict = &mut self.dict;
+        let code_size = &mut self.code_size;
+        let i = &mut self.i;
+        for &c in bytes {
+            let prev = *i;
+            *i = dict.search_and_insert(prev, c);
+            if i.is_none() {
+                if let Some(code) = prev {
+                    try!(w.write_bits(code, *code_size));
+                }
+                *i = Some(dict.search_initials(c as Code))
+            }
+            // There is a hit: do not write out code but continue
+            let next_code = dict.next_code();
+            if next_code > (1 << *code_size as usize)
+               && *code_size < MAX_CODESIZE {
+                *code_size += 1;
+            }
+            if next_code > MAX_ENTRIES {
+                dict.reset();
+                dict.push_node(Node::new(0)); // clear code
+                dict.push_node(Node::new(0)); // end code
+                try!(w.write_bits(dict.clear_code(), *code_size));
+                *code_size = self.min_code_size + 1;
+            }
+
+        }
+        if let Some(code) = *i {
+            try!(w.write_bits(code, *code_size));
+        }
+        try!(w.write_bits(dict.end_code(), *code_size));
+        try!(w.flush());
+        Ok(())
+    }
+}
+
+#[cfg(test)]
 #[test]
 fn round_trip() {
+    use {LsbWriter, LsbReader};
+    
+    let size = 8;
+    let data = b"TOBEORNOTTOBEORTOBEORNOT";
+    let mut compressed = vec![];
+    {
+        let mut enc = Encoder::new(LsbWriter::new(&mut compressed), size).unwrap();
+        enc.encode_bytes(data);
+    }
+    println!("{:?}", compressed);
+    let mut dec = Decoder::new(LsbReader::new(), size);
+    let mut compressed = &compressed[..];
+    let mut data2 = vec![];
+    while compressed.len() > 0 {
+        let (start, bytes) = dec.decode_bytes(&compressed).unwrap();
+        compressed = &compressed[start..];
+        data2.extend(bytes.iter().map(|&i| i));
+    }
+    assert_eq!(data2, data)
 }
