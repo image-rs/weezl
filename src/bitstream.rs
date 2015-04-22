@@ -11,13 +11,13 @@ pub enum Bits {
     None(usize),
 }
 
-/// Bit reader
+/// A bit reader.
 pub trait BitReader {
     /// Returns the next `n` bits.
     fn read_bits(&mut self, buf: &[u8], n: u8) -> Bits;
 }
 
-/// Bit writer
+/// A bit writer.
 pub trait BitWriter: Write {
     /// Writes the next `n` bits.
     fn write_bits(&mut self, v: u16, n: u8) -> io::Result<()>;

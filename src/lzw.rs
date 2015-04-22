@@ -15,7 +15,8 @@ const MAX_ENTRIES: usize = 1 << MAX_CODESIZE as usize;
 /// Alias for a LZW code point
 type Code = u16;
 
-/// Decoding dictionary
+/// Decoding dictionary.
+///
 /// It is not generic due to current limitations of Rust
 /// Inspired by http://www.cplusplus.com/articles/iL18T05o/
 #[derive(Debug)]
@@ -100,13 +101,14 @@ macro_rules! define_decoder_struct {
 $( // START struct definition
 
 #[$doc]
-/// The maximum supported code length is 16 bits. The decoder assumes two
+/// 
+/// The maximum supported code size is 16 bits. The decoder assumes two
 /// special code word to be present in the stream:
 ///
 ///  * `CLEAR_CODE == 1 << min_code_size`
-///  * `END_CODE == CLEAR_CODE + 1`
+///  * `END_CODE   == CLEAR_CODE + 1`
 ///
-/// Furthermore the decoder expects the stream to start with a `CLEAR_CODE`. This
+///Furthermore the decoder expects the stream to start with a `CLEAR_CODE`. This
 /// corresponds to the implementation needed for en- and decoding GIF and TIFF files.
 #[derive(Debug)]
 pub struct $name<R: BitReader> {
@@ -198,8 +200,8 @@ impl<R> $name<R> where R: BitReader {
 }
 
 define_decoder_struct!{
-    Decoder, 0, #[doc = "Decodes a lzw compressed stream (this algorithm is used for GIF files)."];
-    DecoderEarlyChange, 1, #[doc = "Decodes a lzw compressed stream using an “early change” algorithm (used in TIFF files)."];
+    Decoder, 0, #[doc = "Decoder for a LZW compressed stream (this algorithm is used for GIF files)."];
+    DecoderEarlyChange, 1, #[doc = "Decoder for a LZW compressed stream using an “early change” algorithm (used in TIFF files)."];
 }
 
 struct Node {
@@ -347,7 +349,7 @@ where R: Read, W: BitWriter {
     Ok(())
 }
 
-/// LZW encoder
+/// LZW encoder using the algorithm of GIF files.
 pub struct Encoder<W: BitWriter> {
     w: W,
     dict: EncodingDict,
@@ -357,10 +359,10 @@ pub struct Encoder<W: BitWriter> {
 }
 
 impl<W: BitWriter> Encoder<W> {
-    /// Creates a new lzw encoder
+    /// Creates a new LZW encoder.
     ///
-    /// *None*: If `min_code_size < 8` `Self::encode_bytes` might panic if
-    /// the supplied data exceeds `1 << min_code_size`.
+    /// **Note**: If `min_code_size < 8` then `Self::encode_bytes` might panic when
+    /// the supplied data containts values that exceed `1 << min_code_size`.
     pub fn new(mut w: W, min_code_size: u8) -> io::Result<Encoder<W>> {
         let mut dict = EncodingDict::new(min_code_size);
         dict.push_node(Node::new(0)); // clear code
@@ -376,11 +378,12 @@ impl<W: BitWriter> Encoder<W> {
         })
     }
     
-    /// Encodes `bytes`
+    /// Compresses `bytes` and writes the result into the writer.
     ///
     /// ## Panics
     ///
-    /// This function may panic if any of the input bytes exceeds `1 << min_code_size`.
+    /// This function might panic if any of the input bytes exceeds `1 << min_code_size`.
+    /// This cannot happen if `min_code_size >= 8`.
     pub fn encode_bytes(&mut self, bytes: &[u8]) -> io::Result<()> {
         let w = &mut self.w;
         let dict = &mut self.dict;
@@ -410,12 +413,20 @@ impl<W: BitWriter> Encoder<W> {
             }
 
         }
-        if let Some(code) = *i {
-            try!(w.write_bits(code, *code_size));
-        }
-        try!(w.write_bits(dict.end_code(), *code_size));
-        try!(w.flush());
         Ok(())
+    }
+}
+
+impl<W: BitWriter> Drop for Encoder<W> {
+    fn drop(&mut self) {
+        let w = &mut self.w;
+        let code_size = &mut self.code_size;
+        
+        if let Some(code) = self.i {
+            let _ = w.write_bits(code, *code_size);
+        }
+        let _ = w.write_bits(self.dict.end_code(), *code_size);
+        let _ = w.flush();
     }
 }
 
