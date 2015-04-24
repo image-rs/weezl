@@ -102,7 +102,7 @@ $( // START struct definition
 
 #[$doc]
 /// 
-/// The maximum supported code size is 16 bits. The decoder assumes two
+/// The maximum supported code size is 16 bits. The decoder assumes two
 /// special code word to be present in the stream:
 ///
 ///  * `CLEAR_CODE == 1 << min_code_size`
@@ -201,7 +201,7 @@ impl<R> $name<R> where R: BitReader {
 
 define_decoder_struct!{
     Decoder, 0, #[doc = "Decoder for a LZW compressed stream (this algorithm is used for GIF files)."];
-    DecoderEarlyChange, 1, #[doc = "Decoder for a LZW compressed stream using an “early change” algorithm (used in TIFF files)."];
+    DecoderEarlyChange, 1, #[doc = "Decoder for a LZW compressed stream using an 'early change' algorithm (used in TIFF files)."];
 }
 
 struct Node {
@@ -361,8 +361,8 @@ pub struct Encoder<W: BitWriter> {
 impl<W: BitWriter> Encoder<W> {
     /// Creates a new LZW encoder.
     ///
-    /// **Note**: If `min_code_size < 8` then `Self::encode_bytes` might panic when
-    /// the supplied data containts values that exceed `1 << min_code_size`.
+    /// **Note**: If `min_code_size < 8` then `Self::encode_bytes` might panic when
+    /// the supplied data containts values that exceed `1 << min_code_size`.
     pub fn new(mut w: W, min_code_size: u8) -> io::Result<Encoder<W>> {
         let mut dict = EncodingDict::new(min_code_size);
         dict.push_node(Node::new(0)); // clear code
@@ -382,7 +382,7 @@ impl<W: BitWriter> Encoder<W> {
     ///
     /// ## Panics
     ///
-    /// This function might panic if any of the input bytes exceeds `1 << min_code_size`.
+    /// This function might panic if any of the input bytes exceeds `1 << min_code_size`.
     /// This cannot happen if `min_code_size >= 8`.
     pub fn encode_bytes(&mut self, bytes: &[u8]) -> io::Result<()> {
         let w = &mut self.w;
@@ -440,7 +440,7 @@ fn round_trip() {
     let mut compressed = vec![];
     {
         let mut enc = Encoder::new(LsbWriter::new(&mut compressed), size).unwrap();
-        enc.encode_bytes(data);
+        enc.encode_bytes(data).unwrap();
     }
     println!("{:?}", compressed);
     let mut dec = Decoder::new(LsbReader::new(), size);
