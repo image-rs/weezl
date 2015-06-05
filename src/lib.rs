@@ -38,5 +38,6 @@ pub use bitstream::{
     LsbReader,
     LsbWriter,
     MsbReader,
-    MsbWriter
+    MsbWriter,
+    Bits
 };

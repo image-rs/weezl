@@ -71,8 +71,16 @@ impl DecodingDict {
             self.buffer.push(cha);
         }
         while let Some(k) = code {
+            if self.buffer.len() >= MAX_ENTRIES { 
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Invalid code sequence. Cycle in decoding table."
+                ))
+            }
             //(code, cha) = self.table[k as usize];
-            // Note: This could possibly be replaced with an unchecked array access
+            // Note: This could possibly be replaced with an unchecked array access if
+            //  - value is asserted to be < self.next_code() in push
+            //  - min_size is asserted to be < MAX_CODESIZE 
             let entry = self.table[k as usize]; code = entry.0; cha = entry.1;
             self.buffer.push(cha);
         }
@@ -155,6 +163,15 @@ impl<R> $name<R> where R: BitReader {
                     &[]
                 } else {
                     let next_code = self.table.next_code();
+                    if code > next_code {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            &*format!("Invalid code {:X}, expected code <= {:X}",
+                                      code,
+                                      next_code
+                            )
+                        ))
+                    }
                     let prev = self.prev;
                     let result = if prev.is_none() {
                         self.buf = [code as u8];
@@ -169,13 +186,8 @@ impl<R> $name<R> where R: BitReader {
                             self.table.push(prev, cha);
                             self.table.buffer()
                         } else {
-                            return Err(io::Error::new(
-                                io::ErrorKind::InvalidInput,
-                                &*format!("Invalid code {:X}, expected code <= {:X}",
-                                          code,
-                                          next_code
-                                )
-                            ))
+                            // code > next_code is already tested a few lines earlier
+                            unreachable!()
                         };
                         data
                     };
