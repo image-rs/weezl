@@ -427,6 +427,7 @@ impl<W: BitWriter> Drop for Encoder<W> {
             let _ = w.write_bits(code, *code_size);
         }
         let _ = w.write_bits(self.dict.end_code(), *code_size);
+        let _ = w.flush();
     }
     #[cfg(not(feature = "raii_no_panic"))]
     fn drop(&mut self) {
@@ -436,7 +437,8 @@ impl<W: BitWriter> Drop for Encoder<W> {
             if let Some(code) = self.i {
                 try!(w.write_bits(code, *code_size));
             }
-            w.write_bits(self.dict.end_code(), *code_size)
+            try!(w.write_bits(self.dict.end_code(), *code_size));
+            w.flush()
          })().unwrap()
         
     }
