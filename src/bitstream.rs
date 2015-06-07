@@ -126,16 +126,16 @@ $( // START Structure definitions
 
 #[$doc]
 #[allow(dead_code)]
-pub struct $name<'a, W> where W: Write + 'a {
-    w: &'a mut W,
+pub struct $name<W: Write> {
+    w: W,
     bits: u8,
     acc: u32,
 }
 
-impl<'a, W> $name<'a, W> where W: Write + 'a  {
+impl<W: Write> $name<W> {
     /// Creates a new bit reader
     #[allow(dead_code)]
-    pub fn new(writer: &'a mut W) -> $name<'a, W> {
+    pub fn new(writer: W) -> $name<W> {
         $name {
             w: writer,
             bits: 0,
@@ -144,7 +144,7 @@ impl<'a, W> $name<'a, W> where W: Write + 'a  {
     }
 }
 
-impl<'a, W> Write for $name<'a, W> where W: Write + 'a  {
+impl<W: Write> Write for $name<W> {
 
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if self.acc == 0 {
@@ -176,7 +176,7 @@ define_bit_writers!{
     MsbWriter, #[doc = "Writes bits to a byte stream, MSB first."];
 }
 
-impl<'a, W> BitWriter for LsbWriter<'a, W> where W: Write + 'a  {
+impl<W: Write> BitWriter for LsbWriter<W> {
 
     fn write_bits(&mut self, v: u16, n: u8) -> io::Result<()> {
         self.acc |= (v as u32) << self.bits;
@@ -192,7 +192,7 @@ impl<'a, W> BitWriter for LsbWriter<'a, W> where W: Write + 'a  {
 
 }
 
-impl<'a, W> BitWriter for MsbWriter<'a, W> where W: Write + 'a  {
+impl<W: Write> BitWriter for MsbWriter<W> {
 
     fn write_bits(&mut self, v: u16, n: u8) -> io::Result<()> {
         self.acc |= (v as u32) << (32 - n - self.bits);
