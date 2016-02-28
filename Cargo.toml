@@ -1,7 +1,7 @@
 [package]
 name = "lzw"
-version = "0.9.0"
-license = "MIT"
+version = "0.10.0"
+license = "MIT/Apache-2.0"
 description = "LZW compression and decompression."
 authors = ["nwin <nwin@users.noreply.github.com>"]
 readme = "README.md"
