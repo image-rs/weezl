@@ -10,3 +10,7 @@ repository = "https://github.com/nwin/lzw.git"
 [features]
 default = ["raii_no_panic"]
 raii_no_panic = []
+
+[[bin]]
+name = "lzw"
+path = "bin/lzw.rs"
