@@ -7,6 +7,9 @@ authors = ["nwin <nwin@users.noreply.github.com>"]
 readme = "README.md"
 repository = "https://github.com/nwin/lzw.git"
 
+[dev-dependencies]
+criterion = "0.3"
+
 [features]
 default = ["raii_no_panic"]
 raii_no_panic = []
@@ -14,3 +17,7 @@ raii_no_panic = []
 [[bin]]
 name = "lzw"
 path = "bin/lzw.rs"
+
+[[bench]]
+name = "msb8"
+harness = false
