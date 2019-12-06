@@ -51,44 +51,24 @@ impl DecodingDict {
     }
 
     /// Reconstructs the data for the corresponding code
-    fn reconstruct(&mut self, code: Code) -> io::Result<&[u8]> {
+    fn reconstruct(&mut self, code: Code) -> &[u8] {
         self.buffer.clear();
 
-        let mut code_iter;
-        let mut cha;
-        // Check the first access more thoroughly since a bad code
-        // could occur if the data is malformed
-        match self.table.get(code as usize) {
-            Some(&(code_, cha_)) => {
-                code_iter = code_;
-                cha = cha_;
-            }
-            None => return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                &*format!("Invalid code {:X}, expected code <= {:X}", code, self.table.len())
-            ))
-        }
-        self.buffer.push(cha);
+        let mut code_iter = Some(code);
 
         while let Some(k) = code_iter {
-            if self.buffer.len() >= MAX_ENTRIES { 
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "Invalid code sequence. Cycle in decoding table."
-                ))
-            }
+            assert!(self.buffer.len() < MAX_ENTRIES);
             //(code, cha) = self.table[k as usize];
             // Note: This could possibly be replaced with an unchecked array access if
             //  - value is asserted to be < self.next_code() in push
             //  - min_size is asserted to be < MAX_CODESIZE 
             let entry = self.table[k as usize];
             code_iter = entry.0;
-            cha = entry.1;
-            self.buffer.push(cha);
+            self.buffer.push(entry.1);
         }
         self.buffer.reverse();
 
-        Ok(&self.buffer)
+        self.buffer()
     }
 
     /// Returns the buffer constructed by the last reconstruction
@@ -178,17 +158,21 @@ impl<R> $name<R> where R: BitReader {
                     let prev = self.prev;
                     let result = if let Some(prev) = prev {
                         let data = if code == next_code {
-                            let cha = try!(self.table.reconstruct(prev))[0];
-                            self.table.push(Some(prev), cha);
+                            let cha = self.table.reconstruct(prev)[0];
+                            if (next_code as usize) < MAX_ENTRIES {
+                                self.table.push(Some(prev), cha);
+                            }
                             // Here we reconstruct the new code. But we just created it as the
                             // concatenation of `prev` and `cha`, so it would seem that manually
                             // performing the equivalent of the reconstruction instead should be
                             // faster.  Benchmarking however shows the opposite, a ~2% slowdown.
                             // Why so ever.
-                            try!(self.table.reconstruct(code))
+                            self.table.reconstruct(code)
                         } else if code < next_code {
-                            let cha = try!(self.table.reconstruct(code))[0];
-                            self.table.push(Some(prev), cha);
+                            let cha = self.table.reconstruct(code)[0];
+                            if (next_code as usize) < MAX_ENTRIES {
+                                self.table.push(Some(prev), cha);
+                            }
                             self.table.buffer()
                         } else {
                             // code > next_code is already tested a few lines earlier
