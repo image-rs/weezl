@@ -9,11 +9,11 @@ use std::io::{Read, Write};
 
 use bitstream::{Bits, BitReader, BitWriter};
 
-const MAX_CODESIZE: u8 = 12;
-const MAX_ENTRIES: usize = 1 << MAX_CODESIZE as usize;
+pub(crate) const MAX_CODESIZE: u8 = 12;
+pub(crate) const MAX_ENTRIES: usize = 1 << MAX_CODESIZE as usize;
 
 /// Alias for a LZW code point
-type Code = u16;
+pub(crate) type Code = u16;
 
 /// Decoding dictionary.
 ///
@@ -82,6 +82,11 @@ impl DecodingDict {
     fn next_code(&self) -> u16 {
         self.table.len() as u16
     }
+
+    fn is_inited(&self) -> bool {
+        // After we've been cleared the first time.
+        !self.table.is_empty()
+    }
 }
 
 macro_rules! define_decoder_struct {
@@ -111,6 +116,7 @@ pub struct $name<R: BitReader> {
     min_code_size: u8,
     clear_code: Code,
     end_code: Code,
+    has_ended: bool,
 }
 
 impl<R> $name<R> where R: BitReader {
@@ -125,7 +131,12 @@ impl<R> $name<R> where R: BitReader {
             min_code_size: min_code_size,
             clear_code: 1 << min_code_size,
             end_code: (1 << min_code_size) + 1,
+            has_ended: false,
         }
+    }
+
+    pub fn has_ended(&self) -> bool {
+        self.has_ended
     }
     
     /// Tries to obtain and decode a code word from `bytes`.
@@ -143,7 +154,13 @@ impl<R> $name<R> where R: BitReader {
                     self.prev = None;
                     &[]
                 } else if code == self.end_code {
+                    self.has_ended = true;
                     &[]
+                } else if !self.table.is_inited() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("Invalid code {:X}, expected clear code", code)
+                    ));
                 } else {
                     let next_code = self.table.next_code();
                     if code > next_code {
@@ -180,6 +197,12 @@ impl<R> $name<R> where R: BitReader {
                         };
                         data
                     } else {
+                        if code == next_code {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                format!("Invalid first code {:X}, expected code <= {:X}", code, self.end_code)
+                            ));
+                        }
                         self.buf = [code as u8];
                         &self.buf[..]
                     };

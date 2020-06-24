@@ -11,7 +11,7 @@ repository = "https://github.com/nwin/lzw.git"
 bench = false
 
 [dev-dependencies]
-criterion = "0.3"
+criterion = "0.3.1"
 
 [features]
 default = ["raii_no_panic"]

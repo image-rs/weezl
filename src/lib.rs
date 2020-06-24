@@ -23,6 +23,7 @@
 //!     }
 
 mod lzw;
+pub mod relzw;
 mod bitstream;
 
 pub use lzw::{
