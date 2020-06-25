@@ -146,7 +146,7 @@ impl DecodeState {
             Some(tup) => code_link = Some(tup),
         };
 
-        while let Some((code, link)) = code_link.take() {
+        while let Some((mut code, mut link)) = code_link.take() {
             let remain = self.buffer.buffer();
             if remain.len() > out.len() {
                 if out.is_empty() {
@@ -165,17 +165,65 @@ impl DecodeState {
             self.buffer.consume(consumed);
             out = &mut out[consumed..];
 
-            let new_code = match self.refill_bits(&mut inp) {
-                Some(code) => code,
-                // Not enough input available.
-                None => {
-                    if consumed == 0 {
-                        status = Ok(LzwStatus::NoProgress);
-                    }
-                    code_link = Some((code, link));
+            let mut burst = [0; 6];
+            let mut bytes = [0u16; 6];
+            let mut target: [&mut [u8]; 6] = Default::default();
+            let mut burst_size = 0;
+
+            self.refill_bits(&mut inp);
+            for b in &mut burst {
+                *b = match self.get_bits() {
+                    None => break,
+                    Some(code) => code,
+                };
+
+                if burst_size > 0 {
+                    let len = bytes[burst_size-1];
+                    let (into, tail) = out.split_at_mut(usize::from(len));
+                    target[burst_size - 1] = into;
+                    out = tail;
+                }
+
+                burst_size += 1;
+                if self.next_code + burst_size as u16 == (1u16 << self.code_size) {
                     break;
                 }
-            };
+
+                if *b == self.clear_code || *b == self.end_code || *b >= self.next_code {
+                    break;
+                }
+
+                let len = self.table.depths[usize::from(*b)];
+                if out.len() < usize::from(len) {
+                    break;
+                }
+
+                bytes[burst_size-1] = len;
+            }
+
+            if burst_size == 0 {
+                if consumed == 0 {
+                    status = Ok(LzwStatus::NoProgress);
+                }
+                code_link = Some((code, link));
+                break;
+            }
+
+            let (&new_code, burst) = burst[..burst_size].split_last().unwrap();
+            let need_code = new_code >= self.next_code;
+            for (&burst, target) in burst.iter().zip(&mut target[..burst_size-1]) {
+                let cha = self.buffer.reconstruct_direct(&self.table, burst, target);
+                let new_link = self.table.derive(&link, cha, code);
+                self.next_code += 1;
+                code = burst;
+                link = new_link;
+            }
+            if need_code {
+                if let Some(target) = target[..burst_size-1].last() {
+                    self.buffer.bytes[..target.len()].copy_from_slice(target);
+                    self.buffer.write_mark = target.len();
+                }
+            }
 
             if new_code == self.clear_code {
                 self.reset_tables();
@@ -294,11 +342,20 @@ impl Buffer {
         self.write_mark = 0;
         self.read_mark = 0;
         let depth = table.depths[usize::from(code)];
-        let mut code_iter = code;
-        let out = &mut self.bytes[..usize::from(depth)];
-        let mut table = &table.inner[..=usize::from(code_iter)];
+        let mut memory = core::mem::take(&mut self.bytes);
 
-        for ch in out {
+        let out = &mut memory[..usize::from(depth)];
+        let last = self.reconstruct_direct(table, code, out);
+
+        self.bytes = memory;
+        self.write_mark = usize::from(depth);
+        last
+    }
+
+    fn reconstruct_direct(&mut self, table: &Table, code: Code, out: &mut [u8]) -> u8 {
+        let mut code_iter = code;
+        let mut table = &table.inner[..=usize::from(code_iter)];
+        for ch in &mut out[..] {
             //(code, cha) = self.table[k as usize];
             // Note: This could possibly be replaced with an unchecked array access if
             //  - value is asserted to be < self.next_code() in push
@@ -308,10 +365,8 @@ impl Buffer {
             table = &table[..=usize::from(code_iter)];
             *ch = entry.byte;
         }
-
-        self.write_mark = usize::from(depth);
-        self.bytes[..self.write_mark].reverse();
-        self.bytes[0]
+        out.reverse();
+        out[0]
     }
 
     fn buffer(&self) -> &[u8] {
