@@ -6,7 +6,7 @@ pub struct Decoder {
 
 #[derive(Clone)]
 struct Link {
-    prev: Option<Code>,
+    offset: Code,
     byte: u8,
 }
 
@@ -15,7 +15,7 @@ struct DecodeState {
     min_size: u8,
 
     /// The table of decoded codes.
-    table: Vec<Link>,
+    table: Table,
 
     /// The buffer of decoded data.
     buffer: Buffer,
@@ -44,6 +44,11 @@ struct Buffer {
     bytes: Box<[u8]>,
     read_mark: usize,
     write_mark: usize,
+}
+
+struct Table {
+    inner: Vec<Link>,
+    depths: Vec<u16>,
 }
 
 pub struct StreamResult {
@@ -89,7 +94,7 @@ impl DecodeState {
     fn new(min_size: u8) -> Self {
         DecodeState {
             min_size: min_size,
-            table: Vec::with_capacity(512),
+            table: Table::new(),
             buffer: Buffer::new(),
             last: None,
             clear_code: 1 << min_size,
@@ -103,16 +108,9 @@ impl DecodeState {
     }
 
     fn reset_tables(&mut self) {
-        self.table.clear();
         self.code_size = self.min_size + 1;
         self.next_code = (1 << self.min_size) + 2;
-        for i in 0..(1u16 << u16::from(self.min_size)) {
-            self.table.push(Link::base(i as u8));
-        }
-        // Clear code.
-        self.table.push(Link::base(0));
-        // End code.
-        self.table.push(Link::base(0));
+        self.table.clear(self.min_size);
     }
 
     fn advance(&mut self, mut inp: &[u8], mut out: &mut [u8]) -> StreamResult {
@@ -139,7 +137,7 @@ impl DecodeState {
                             status = Err(LzwError::InvalidCode);
                         } else {
                             self.buffer.reconstruct_low(&self.table, init_code);
-                            let link = self.table[usize::from(init_code)].clone();
+                            let link = self.table.at(init_code).clone();
                             code_link = Some((init_code, link));
                         }
                     }
@@ -207,9 +205,8 @@ impl DecodeState {
             }
 
             let new_link;
-            if self.table.len() < MAX_ENTRIES {
-                let link = Link::derive(cha, code);
-                self.table.push(link.clone());
+            if !self.table.is_full() {
+                let link = self.table.derive(&link, cha, code);
                 self.next_code += 1;
                 new_link = link;
             } else {
@@ -284,22 +281,26 @@ impl Buffer {
         self.bytes[0]
     }
 
-    fn reconstruct_low(&mut self, table: &[Link], code: Code) -> u8 {
-        let mut code_iter = Some(code);
+    fn reconstruct_low(&mut self, table: &Table, code: Code) -> u8 {
         self.write_mark = 0;
         self.read_mark = 0;
+        let depth = table.depths[usize::from(code)];
+        let mut code_iter = code;
+        let out = &mut self.bytes[..usize::from(depth)];
+        let mut table = &table.inner[..=usize::from(code_iter)];
 
-        while let Some(k) = code_iter {
+        for ch in out {
             //(code, cha) = self.table[k as usize];
             // Note: This could possibly be replaced with an unchecked array access if
             //  - value is asserted to be < self.next_code() in push
             //  - min_size is asserted to be < MAX_CODESIZE 
-            let entry = &table[k as usize];
-            code_iter = entry.prev;
-            self.bytes[self.write_mark] = entry.byte;
-            self.write_mark += 1;
+            let entry = table.last().unwrap();
+            code_iter = code_iter.saturating_sub(entry.offset);
+            table = &table[..=usize::from(code_iter)];
+            *ch = entry.byte;
         }
 
+        self.write_mark = usize::from(depth);
         self.bytes[..self.write_mark].reverse();
         self.bytes[0]
     }
@@ -313,12 +314,57 @@ impl Buffer {
     }
 }
 
-impl Link {
-    fn base(byte: u8) -> Self {
-        Link { prev: None, byte }
+impl Table {
+    fn new() -> Self {
+        Table {
+            inner: Vec::with_capacity(MAX_ENTRIES),
+            depths: Vec::with_capacity(MAX_ENTRIES),
+        }
     }
 
-    fn derive(byte: u8, prev: Code) -> Self {
-        Link { prev: Some(prev), byte }
+    fn clear(&mut self, min_size: u8) {
+        self.inner.clear();
+        self.depths.clear();
+        for i in 0..(1u16 << u16::from(min_size)) {
+            self.inner.push(Link::base(i as u8));
+            self.depths.push(1);
+        }
+        // Clear code.
+        self.inner.push(Link::base(0));
+        self.depths.push(0);
+        // End code.
+        self.inner.push(Link::base(0));
+        self.depths.push(0);
+    }
+
+    fn at(&self, code: Code) -> &Link {
+        &self.inner[usize::from(code)]
+    }
+
+    fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
+    fn is_full(&self) -> bool {
+        self.inner.len() >= MAX_ENTRIES
+    }
+
+    fn derive(&mut self, from: &Link, byte: u8, prev: Code) -> Link {
+        let new_code = self.inner.len() as u16;
+        let link = from.derive(byte, prev, new_code);
+        let depth = self.depths[usize::from(prev)] + 1;
+        self.inner.push(link.clone());
+        self.depths.push(depth);
+        link
+    }
+}
+
+impl Link {
+    fn base(byte: u8) -> Self {
+        Link { offset: 0, byte }
+    }
+
+    fn derive(&self, byte: u8, prev: Code, new_code: Code) -> Self {
+        Link { offset: new_code.saturating_sub(prev), byte }
     }
 }
