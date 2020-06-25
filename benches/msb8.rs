@@ -3,7 +3,7 @@ extern crate lzw;
 
 use std::fs;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use lzw::{Decoder, MsbReader};
+use lzw::relzw::{ByteOrder,Decoder,LzwStatus};
 
 pub fn criterion_benchmark(c: &mut Criterion, file: &str) {
     let data = fs::read(file)
@@ -12,15 +12,19 @@ pub fn criterion_benchmark(c: &mut Criterion, file: &str) {
     let id = BenchmarkId::new(file, data.len());
     group.throughput(Throughput::Bytes(data.len() as u64));
     group.bench_with_input(id, &data, |b, data| b.iter(|| {
-        let mut decoder = Decoder::new(MsbReader::new(), 8);
+        let mut decoder = Decoder::new(ByteOrder::Msb, 8);
+        let mut outbuf = vec![0; 1 << 12];
         let mut data = data.as_slice();
-        while !data.is_empty() {
-            match decoder.decode_bytes(data) {
-                Ok((len, output)) => {
-                    data = &data[len..];
-                    black_box(output);
-                },
-                Err(err) => panic!("Error: {:?}", err),
+        loop {
+            let result = decoder.decode_bytes(data, &mut outbuf[..]);
+            let done = result.status.expect("Error");
+            data = &data[result.consumed_in..];
+            black_box(&outbuf[..result.consumed_out]);
+            if let LzwStatus::Done = done {
+                break;
+            }
+            if let LzwStatus::NoProgress = done {
+                panic!("Need to make progress");
             }
         }
     }));
