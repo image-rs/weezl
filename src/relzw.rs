@@ -36,7 +36,7 @@ struct DecodeState {
 
     has_ended: bool,
 
-    bit_buffer: u32,
+    bit_buffer: u64,
     bits: u8,
 }
 
@@ -123,7 +123,7 @@ impl DecodeState {
         match self.last.take() {
             // No last state? This is the first code after a reset?
             None => {
-                match self.refill_bits(&mut inp) {
+                match self.next_symbol(&mut inp) {
                     Some(code) if code > self.next_code => status = Err(LzwError::InvalidCode),
                     Some(code) if code == self.next_code => status = Err(LzwError::InvalidCode),
                     None => status = Ok(LzwStatus::NoProgress),
@@ -232,31 +232,40 @@ impl DecodeState {
         }
     }
 
-    fn refill_bits(&mut self, inp: &mut &[u8]) -> Option<Code> {
+    fn next_symbol(&mut self, inp: &mut &[u8]) -> Option<Code> {
         if self.bits < self.code_size {
-            // TODO: handle lsb?
-            let wish_count = (32 - self.bits) / 8;
-            let mut buffer = [0u8; 4];
-            let new_bits = match inp.get(..usize::from(wish_count)) {
-                Some(bytes) => {
-                    buffer[..usize::from(wish_count)].copy_from_slice(bytes);
-                    *inp = &inp[usize::from(wish_count)..];
-                    wish_count * 8
-                }
-                None => {
-                    let new_bits = inp.len() * 8;
-                    buffer[..inp.len()].copy_from_slice(inp);
-                    *inp = &[];
-                    new_bits as u8
-                }
-            };
-            self.bit_buffer |= u32::from_be_bytes(buffer) >> self.bits;
-            self.bits += new_bits;
-
-            if self.bits < self.code_size {
-                return None;
-            }
+            self.refill_bits(inp);
         }
+
+        self.get_bits()
+    }
+
+    fn refill_bits(&mut self, inp: &mut &[u8]) {
+        // TODO: handle lsb?
+        let wish_count = (64 - self.bits) / 8;
+        let mut buffer = [0u8; 8];
+        let new_bits = match inp.get(..usize::from(wish_count)) {
+            Some(bytes) => {
+                buffer[..usize::from(wish_count)].copy_from_slice(bytes);
+                *inp = &inp[usize::from(wish_count)..];
+                wish_count * 8
+            }
+            None => {
+                let new_bits = inp.len() * 8;
+                buffer[..inp.len()].copy_from_slice(inp);
+                *inp = &[];
+                new_bits as u8
+            }
+        };
+        self.bit_buffer |= u64::from_be_bytes(buffer) >> self.bits;
+        self.bits += new_bits;
+    }
+
+    fn get_bits(&mut self) -> Option<Code> {
+        if self.bits < self.code_size {
+            return None;
+        }
+
         let mask = (1 << self.code_size) - 1;
         let rotbuf = self.bit_buffer.rotate_left(self.code_size.into());
         self.bit_buffer = rotbuf & !mask;
