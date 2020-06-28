@@ -1,13 +1,14 @@
 [package]
-name = "lzw"
-version = "0.10.0"
+name = "weezl"
+version = "0.0.1"
 license = "MIT/Apache-2.0"
 description = "LZW compression and decompression."
-authors = ["nwin <nwin@users.noreply.github.com>"]
+authors = ["HeroicKatora <andreas.molzer@gmx.de>"]
 readme = "README.md"
-repository = "https://github.com/nwin/lzw.git"
+repository = "https://github.com/image-rs/lzw.git"
 
 [lib]
+name = "lzw"
 bench = false
 
 [dev-dependencies]

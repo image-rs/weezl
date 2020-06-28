@@ -1,4 +1,5 @@
 use std::{env, io, fs, process};
+use std::io::{BufWriter};
 use std::path::PathBuf;
 
 fn main() {
@@ -28,51 +29,33 @@ fn main() {
     let out = out.lock();
 
     let result = match (input, operation) {
-        (Input::File(file), Operation::Encode) => {
+        (Input::File(file), Operation::Encode) => (|| {
+            let writer = BufWriter::new(out);
             lzw::encode(
-                fs::File::open(file).unwrap(),
-                lzw::MsbWriter::new(out),
+                fs::File::open(file)?,
+                lzw::MsbWriter::new(writer),
                 min_code)
-        },
+        })(),
         (Input::Stdin, Operation::Encode) => {
+            let writer = BufWriter::new(out);
             let stdin = io::stdin();
             lzw::encode(
                 stdin.lock(),
-                lzw::MsbWriter::new(out),
+                lzw::MsbWriter::new(writer),
                 min_code)
         },
         (Input::File(file), Operation::Decode) => (|| {
-            let data = fs::read(file)?;
+            let data = fs::File::open(file)?;
+            let file = io::BufReader::new(data);
+
             let mut decoder = lzw::relzw::Decoder::new(lzw::relzw::ByteOrder::Msb, 8);
-            let mut outbuf = vec![0; 1 << 12];
-            let mut outmark = 0;
-            let mut data = data.as_slice();
-            loop {
-                let result = decoder.decode_bytes(data, &mut outbuf[outmark..]);
-                let done = result.status.map_err(|err| io::Error::new(
-                        io::ErrorKind::InvalidData, &*format!("{:?}", err)
-                    ))?;
-                data = &data[result.consumed_in..];
-                outmark += result.consumed_out;
-                if let lzw::relzw::LzwStatus::Done = done {
-                    break;
-                }
-                if let lzw::relzw::LzwStatus::NoProgress = done {
-                    if outmark == outbuf.len() {
-                        let next_len = outbuf.len() * 2;
-                        outbuf.resize(next_len, 0u8);
-                    } else {
-                        return Err(io::Error::new(
-                            io::ErrorKind::UnexpectedEof, ""
-                        ));
-                    }
-                }
-            }
-            outbuf.truncate(outmark);
-            io::copy(&mut outbuf.as_slice(), &mut {out})?;
-            Ok(())
+            decoder.decode_all(file, out).status
         })(),
-        _ => unimplemented!("decoding is not implemented"),
+        (Input::Stdin, Operation::Decode) => {
+            let input = io::BufReader::new(io::stdin());
+            let mut decoder = lzw::relzw::Decoder::new(lzw::relzw::ByteOrder::Msb, 8);
+            decoder.decode_all(input, out).status
+        }
     };
 
     result.expect("Operation Failed: ");

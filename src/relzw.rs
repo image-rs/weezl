@@ -1,4 +1,5 @@
 use crate::lzw::{MAX_CODESIZE, MAX_ENTRIES, Code};
+use std::io::{self, BufRead, Write};
 
 pub struct Decoder {
     state: Box<DecodeState>,
@@ -57,6 +58,14 @@ pub struct StreamResult {
     pub status: Result<LzwStatus, LzwError>,
 }
 
+pub struct AllResult {
+    /// The total number of bytes consumed from the reader.
+    pub bytes_read: usize,
+    /// The total number of bytes written into the writer.
+    pub bytes_written: usize,
+    pub status: std::io::Result<()>,
+}
+
 pub enum ByteOrder {
     Msb,
     Lsb,
@@ -83,6 +92,59 @@ impl Decoder {
 
     pub fn decode_bytes(&mut self, inp: &[u8], out: &mut [u8]) -> StreamResult {
         self.state.advance(inp, out)
+    }
+
+    pub fn decode_all(&mut self, mut read: impl BufRead, mut write: impl Write) -> AllResult {
+        enum Progress {
+            Ok,
+            Done,
+        }
+
+        let mut bytes_read = 0;
+        let mut bytes_written = 0;
+
+        let mut outbuf = vec![0; 1 << 20];
+        let once = move || {
+            let data = read.fill_buf()?;
+
+            let result = self.decode_bytes(data, &mut outbuf[..]);
+            bytes_read += result.consumed_in;
+            bytes_written += result.consumed_out;
+            read.consume(result.consumed_in);
+
+            let done = result.status.map_err(|err| io::Error::new(
+                    io::ErrorKind::InvalidData, &*format!("{:?}", err)
+                ))?;
+
+            if let LzwStatus::Done = done {
+                write.write_all(&outbuf[..result.consumed_out])?;
+                return Ok(Progress::Done);
+            }
+
+            if let LzwStatus::NoProgress = done {
+                return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof, "No more data but no end marker detected"
+                    ));
+            }
+
+            write.write_all(&outbuf[..result.consumed_out])?;
+            Ok(Progress::Ok)
+        };
+
+        let status = core::iter::repeat_with(once)
+            // scan+fuse can be replaced with map_while
+            .scan((), |(), result| match result {
+                Ok(Progress::Ok) => Some(Ok(())),
+                Err(err) => Some(Err(err)),
+                Ok(Progress::Done) => None,
+            })
+            .fuse()
+            .collect();
+        AllResult {
+            bytes_read,
+            bytes_written,
+            status,
+        }
     }
 
     pub fn has_ended(&self) -> bool {
