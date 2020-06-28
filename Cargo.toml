@@ -8,7 +8,7 @@ readme = "README.md"
 repository = "https://github.com/image-rs/lzw.git"
 
 [lib]
-name = "lzw"
+name = "weezl"
 bench = false
 
 [dev-dependencies]
