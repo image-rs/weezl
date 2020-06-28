@@ -1,9 +1,9 @@
 extern crate criterion;
-extern crate lzw;
+extern crate weezl;
 
 use std::fs;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use lzw::relzw::{ByteOrder,Decoder,LzwStatus};
+use weezl::relzw::{ByteOrder,Decoder,LzwStatus};
 
 pub fn criterion_benchmark(c: &mut Criterion, file: &str) {
     let data = fs::read(file)

@@ -103,13 +103,16 @@ impl Decoder {
         let mut bytes_read = 0;
         let mut bytes_written = 0;
 
+        let read_bytes = &mut bytes_read;
+        let write_bytes = &mut bytes_written;
+
         let mut outbuf = vec![0; 1 << 20];
         let once = move || {
             let data = read.fill_buf()?;
 
             let result = self.decode_bytes(data, &mut outbuf[..]);
-            bytes_read += result.consumed_in;
-            bytes_written += result.consumed_out;
+            *read_bytes += result.consumed_in;
+            *write_bytes += result.consumed_out;
             read.consume(result.consumed_in);
 
             let done = result.status.map_err(|err| io::Error::new(
