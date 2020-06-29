@@ -211,6 +211,10 @@ impl DecodeState {
             Some(tup) => code_link = Some(tup),
         };
 
+        let mut burst = [0; 6];
+        let mut bytes = [0u16; 6];
+        let mut target: [&mut [u8]; 6] = Default::default();
+
         while let Some((mut code, mut link)) = code_link.take() {
             let remain = self.buffer.buffer();
             if remain.len() > out.len() {
@@ -230,9 +234,6 @@ impl DecodeState {
             self.buffer.consume(consumed);
             out = &mut out[consumed..];
 
-            let mut burst = [0; 6];
-            let mut bytes = [0u16; 6];
-            let mut target: [&mut [u8]; 6] = Default::default();
             let mut burst_size = 0;
 
             self.refill_bits(&mut inp);
