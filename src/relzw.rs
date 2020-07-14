@@ -211,11 +211,9 @@ impl DecodeState {
             Some(tup) => code_link = Some(tup),
         };
 
-        let mut burst = [0; 6];
-        let mut bytes = [0u16; 6];
-        let mut target: [&mut [u8]; 6] = Default::default();
-
-        while let Some((mut code, mut link)) = code_link.take() {
+        let mut burst_required_for_progress = false;
+        if let Some((code, link)) = code_link.take() {
+            code_link = Some((code, link));
             let remain = self.buffer.buffer();
             if remain.len() > out.len() {
                 if out.is_empty() {
@@ -225,18 +223,36 @@ impl DecodeState {
                     self.buffer.consume(out.len());
                     out = &mut [];
                 }
+            } else if remain.is_empty() {
+                status = Ok(LzwStatus::NoProgress);
+                burst_required_for_progress = true;
+            } else {
+                let consumed = remain.len();
+                out[..consumed].copy_from_slice(remain);
+                self.buffer.consume(consumed);
+                out = &mut out[consumed..];
+                burst_required_for_progress = false;
+            }
+        }
+
+        let mut burst = [0; 6];
+        let mut bytes = [0u16; 6];
+        let mut target: [&mut [u8]; 6] = Default::default();
+        let mut last_decoded: Option<&[u8]> = None;
+
+        while let Some((mut code, mut link)) = code_link.take() {
+            if out.is_empty() && !self.buffer.buffer().is_empty() {
                 code_link = Some((code, link));
                 break;
             }
 
-            let consumed = remain.len();
-            out[..consumed].copy_from_slice(remain);
-            self.buffer.consume(consumed);
-            out = &mut out[consumed..];
-
             let mut burst_size = 0;
 
             self.refill_bits(&mut inp);
+            // A burst is a sequence of decodes that are completely independent of each other. This
+            // is the case if neither is an end code, a clear code, or a next code, i.e. we have
+            // all of them in the decoding table and thus known their depths, and additionally if
+            // we can decode them directly into the output buffer.
             for b in &mut burst {
                 *b = match self.get_bits() {
                     None => break,
@@ -268,15 +284,15 @@ impl DecodeState {
             }
 
             if burst_size == 0 {
-                if consumed == 0 {
+                if burst_required_for_progress {
                     status = Ok(LzwStatus::NoProgress);
                 }
                 code_link = Some((code, link));
                 break;
             }
 
+            burst_required_for_progress = false;
             let (&new_code, burst) = burst[..burst_size].split_last().unwrap();
-            let need_code = new_code >= self.next_code;
             for (&burst, target) in burst.iter().zip(&mut target[..burst_size-1]) {
                 let cha = self.buffer.reconstruct_direct(&self.table, burst, target);
                 let new_link = self.table.derive(&link, cha, code);
@@ -284,34 +300,71 @@ impl DecodeState {
                 code = burst;
                 link = new_link;
             }
-            if need_code {
-                if let Some(target) = target[..burst_size-1].last() {
-                    self.buffer.bytes[..target.len()].copy_from_slice(target);
-                    self.buffer.write_mark = target.len();
-                }
+
+            if let Some(new_last) = target[..burst_size-1].last_mut() {
+                let slice = core::mem::replace(new_last, &mut []);
+                last_decoded = Some(&*slice);
             }
 
             if new_code == self.clear_code {
                 self.reset_tables();
+                last_decoded = None;
                 continue;
             }
 
             if new_code == self.end_code {
                 status = Ok(LzwStatus::Done);
+                last_decoded = None;
                 break;
             }
 
             if new_code > self.next_code {
                 status = Err(LzwError::InvalidCode);
+                last_decoded = None;
                 break;
             }
 
-            // Each newly read code creates one new code/link based on the preceding code.
-            let cha;
-            if new_code == self.next_code {
-                cha = self.buffer.reconstruct_high();
+            let required_len = if new_code == self.next_code {
+                self.table.depths[usize::from(code)] + 1
             } else {
-                cha = self.buffer.reconstruct_low(&self.table, new_code);
+                self.table.depths[usize::from(new_code)]
+            };
+
+            // Ohh, we will need to store our current state into the buffer.
+            let cha;
+            let is_in_buffer;
+            if usize::from(required_len) > out.len() {
+                is_in_buffer = true;
+                if new_code == self.next_code {
+                    if let Some(last) = last_decoded.take() {
+                        self.buffer.bytes[..last.len()].copy_from_slice(last);
+                        self.buffer.write_mark = last.len();
+                        self.buffer.read_mark = last.len();
+                    }
+
+                    cha = self.buffer.reconstruct_high();
+                } else {
+                    cha = self.buffer.reconstruct_low(&self.table, new_code);
+                }
+            } else {
+                is_in_buffer = false;
+                let (target, tail) = out.split_at_mut(usize::from(required_len));
+                out = tail;
+
+                if new_code == self.next_code {
+                    // Reconstruct high.
+                    let source = match last_decoded.take() {
+                        Some(last) => last,
+                        None => &self.buffer.bytes[..self.buffer.write_mark],
+                    };
+                    cha = source[0];
+                    target[..source.len()].copy_from_slice(source);
+                    target[source.len()..][0] = source[0];
+                } else {
+                    cha = self.buffer.reconstruct_direct(&self.table, new_code, target);
+                }
+
+                last_decoded = Some(target);
             }
 
             if self.next_code == (1u16 << self.code_size) - 1 && self.code_size < MAX_CODESIZE {
@@ -319,6 +372,8 @@ impl DecodeState {
             }
 
             let new_link;
+            // Each newly read code creates one new code/link based on the preceding code if we
+            // have enough space to put it there.
             if !self.table.is_full() {
                 let link = self.table.derive(&link, cha, code);
                 self.next_code += 1;
@@ -328,6 +383,16 @@ impl DecodeState {
             }
 
             code_link = Some((new_code, new_link));
+
+            if is_in_buffer {
+                break;
+            }
+        }
+
+        if let Some(tail) = last_decoded {
+            self.buffer.bytes[..tail.len()].copy_from_slice(tail);
+            self.buffer.write_mark = tail.len();
+            self.buffer.read_mark = tail.len();
         }
 
         if o_in > inp.len() {
