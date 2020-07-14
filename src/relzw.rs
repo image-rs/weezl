@@ -7,7 +7,7 @@ pub struct Decoder {
 
 #[derive(Clone)]
 struct Link {
-    offset: Code,
+    prev: Code,
     byte: u8,
 }
 
@@ -421,13 +421,14 @@ impl Buffer {
     fn reconstruct_direct(&mut self, table: &Table, code: Code, out: &mut [u8]) -> u8 {
         let mut code_iter = code;
         let mut table = &table.inner[..=usize::from(code_iter)];
+        let len = code_iter;
         for ch in out.iter_mut().rev() {
             //(code, cha) = self.table[k as usize];
             // Note: This could possibly be replaced with an unchecked array access if
             //  - value is asserted to be < self.next_code() in push
             //  - min_size is asserted to be < MAX_CODESIZE 
             let entry = table.last().unwrap();
-            code_iter = code_iter.saturating_sub(entry.offset);
+            code_iter = core::cmp::min(len, entry.prev);
             table = &table[..=usize::from(code_iter)];
             *ch = entry.byte;
         }
@@ -479,8 +480,7 @@ impl Table {
     }
 
     fn derive(&mut self, from: &Link, byte: u8, prev: Code) -> Link {
-        let new_code = self.inner.len() as u16;
-        let link = from.derive(byte, prev, new_code);
+        let link = from.derive(byte, prev);
         let depth = self.depths[usize::from(prev)] + 1;
         self.inner.push(link.clone());
         self.depths.push(depth);
@@ -490,10 +490,12 @@ impl Table {
 
 impl Link {
     fn base(byte: u8) -> Self {
-        Link { offset: 0, byte }
+        Link { prev: 0, byte }
     }
 
-    fn derive(&self, byte: u8, prev: Code, new_code: Code) -> Self {
-        Link { offset: new_code.saturating_sub(prev), byte }
+    // TODO: this has self type to make it clear we might depend on the old in a future
+    // optimization. However, that has no practical purpose right now.
+    fn derive(&self, byte: u8, prev: Code) -> Self {
+        Link { prev, byte }
     }
 }
