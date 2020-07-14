@@ -485,16 +485,15 @@ impl Buffer {
 
     fn reconstruct_direct(&mut self, table: &Table, code: Code, out: &mut [u8]) -> u8 {
         let mut code_iter = code;
-        let mut table = &table.inner[..=usize::from(code_iter)];
+        let table = &table.inner[..=usize::from(code)];
         let len = code_iter;
         for ch in out.iter_mut().rev() {
             //(code, cha) = self.table[k as usize];
             // Note: This could possibly be replaced with an unchecked array access if
             //  - value is asserted to be < self.next_code() in push
             //  - min_size is asserted to be < MAX_CODESIZE 
-            let entry = table.last().unwrap();
+            let entry = &table[usize::from(code_iter)];
             code_iter = core::cmp::min(len, entry.prev);
-            table = &table[..=usize::from(code_iter)];
             *ch = entry.byte;
         }
         out[0]
