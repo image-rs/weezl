@@ -49,13 +49,13 @@ fn main() {
         },
         (Input::File(file), Operation::Decode) => (|| {
             let data = fs::File::open(file)?;
-            let file = io::BufReader::new(data);
+            let file = io::BufReader::with_capacity(1 << 26, data);
 
             let mut decoder = relzw::Decoder::new(relzw::ByteOrder::Msb, 8);
             decoder.decode_all(file, out).status
         })(),
         (Input::Stdin, Operation::Decode) => {
-            let input = io::BufReader::new(io::stdin());
+            let input = io::BufReader::with_capacity(1 << 26, io::stdin());
             let mut decoder = relzw::Decoder::new(relzw::ByteOrder::Msb, 8);
             decoder.decode_all(input, out).status
         }

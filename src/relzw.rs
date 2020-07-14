@@ -106,7 +106,7 @@ impl Decoder {
         let read_bytes = &mut bytes_read;
         let write_bytes = &mut bytes_written;
 
-        let mut outbuf = vec![0; 1 << 20];
+        let mut outbuf = vec![0; 1 << 26];
         let once = move || {
             let data = read.fill_buf()?;
 
