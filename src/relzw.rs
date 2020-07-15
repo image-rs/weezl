@@ -26,6 +26,7 @@ struct DecodeState {
 
     /// The current code size.
     code_size: u8,
+    code_mask: u16,
 
     next_code: Code,
 
@@ -169,11 +170,13 @@ impl DecodeState {
             bit_buffer: 0,
             bits: 0,
             code_size: min_size + 1,
+            code_mask: (1u16 << (min_size + 1)) - 1,
         }
     }
 
     fn reset_tables(&mut self) {
         self.code_size = self.min_size + 1;
+        self.code_mask = (1 << self.code_size) - 1;
         self.next_code = (1 << self.min_size) + 2;
         self.table.clear(self.min_size);
     }
@@ -266,8 +269,9 @@ impl DecodeState {
                     out = tail;
                 }
 
+                let current_code = self.next_code + burst_size as u16;
                 burst_size += 1;
-                if self.next_code + burst_size as u16 == (1u16 << self.code_size) {
+                if current_code == self.code_mask {
                     break;
                 }
 
@@ -367,8 +371,8 @@ impl DecodeState {
                 last_decoded = Some(target);
             }
 
-            if self.next_code == (1u16 << self.code_size) - 1 && self.code_size < MAX_CODESIZE {
-                self.code_size += 1;
+            if self.next_code == self.code_mask && self.code_size < MAX_CODESIZE {
+                self.bump_code_size();
             }
 
             let new_link;
@@ -419,6 +423,11 @@ impl DecodeState {
         self.get_bits()
     }
 
+    fn bump_code_size(&mut self) {
+        self.code_size += 1;
+        self.code_mask = (self.code_mask << 1) | 1;
+    }
+
     fn refill_bits(&mut self, inp: &mut &[u8]) {
         // TODO: handle lsb?
         let wish_count = (64 - self.bits) / 8;
@@ -445,7 +454,7 @@ impl DecodeState {
             return None;
         }
 
-        let mask = (1 << self.code_size) - 1;
+        let mask = u64::from(self.code_mask);
         let rotbuf = self.bit_buffer.rotate_left(self.code_size.into());
         self.bit_buffer = rotbuf & !mask;
         self.bits -= self.code_size;
