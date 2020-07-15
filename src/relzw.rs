@@ -2,7 +2,12 @@ use crate::lzw::{MAX_CODESIZE, MAX_ENTRIES, Code};
 use std::io::{self, BufRead, Write};
 
 pub struct Decoder {
-    state: Box<DecodeState>,
+    state: Box<dyn Stateful + Send + 'static>,
+}
+
+trait Stateful {
+    fn advance(&mut self, inp: &[u8], out: &mut [u8]) -> StreamResult;
+    fn has_ended(&self) -> bool;
 }
 
 #[derive(Clone)]
@@ -152,7 +157,7 @@ impl Decoder {
     }
 
     pub fn has_ended(&self) -> bool {
-        self.state.has_ended
+        self.state.has_ended()
     }
 }
 
@@ -179,6 +184,12 @@ impl DecodeState {
         self.code_mask = (1 << self.code_size) - 1;
         self.next_code = (1 << self.min_size) + 2;
         self.table.clear(self.min_size);
+    }
+}
+
+impl Stateful for DecodeState {
+    fn has_ended(&self) -> bool {
+        self.has_ended
     }
 
     fn advance(&mut self, mut inp: &[u8], mut out: &mut [u8]) -> StreamResult {
@@ -414,7 +425,9 @@ impl DecodeState {
             status,
         }
     }
+}
 
+impl DecodeState {
     fn next_symbol(&mut self, inp: &mut &[u8]) -> Option<Code> {
         if self.bits < self.code_size {
             self.refill_bits(inp);
