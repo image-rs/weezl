@@ -179,6 +179,13 @@ impl DecodeState {
         }
     }
 
+    fn init_tables(&mut self) {
+        self.code_size = self.min_size + 1;
+        self.code_mask = (1 << self.code_size) - 1;
+        self.next_code = (1 << self.min_size) + 2;
+        self.table.init(self.min_size);
+    }
+
     fn reset_tables(&mut self) {
         self.code_size = self.min_size + 1;
         self.code_mask = (1 << self.code_size) - 1;
@@ -208,7 +215,7 @@ impl Stateful for DecodeState {
                     None => status = Ok(LzwStatus::NoProgress),
                     Some(init_code) => {
                         if init_code == self.clear_code {
-                            self.reset_tables();
+                            self.init_tables();
                         } else if init_code == self.end_code {
                             self.has_ended = true;
                             status = Ok(LzwStatus::Done);
@@ -539,6 +546,12 @@ impl Table {
     }
 
     fn clear(&mut self, min_size: u8) {
+        let static_count = usize::from(1u16 << u16::from(min_size)) + 2;
+        self.inner.truncate(static_count);
+        self.depths.truncate(static_count);
+    }
+
+    fn init(&mut self, min_size: u8) {
         self.inner.clear();
         self.depths.clear();
         for i in 0..(1u16 << u16::from(min_size)) {
