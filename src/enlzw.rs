@@ -76,6 +76,10 @@ impl Encoder {
     pub fn encode_bytes(&mut self, inp: &[u8], out: &mut [u8]) -> StreamResult {
         self.state.advance(inp, out)
     }
+
+    pub fn finish(&mut self) {
+        self.state.mark_ended();
+    }
 }
 
 impl EncodeState {
@@ -83,7 +87,7 @@ impl EncodeState {
         let clear_code = 1 << min_size;
         let mut tree = Tree::default();
         tree.init(min_size);
-        EncodeState {
+        let mut state = EncodeState {
             min_size,
             tree,
             has_ended: false,
@@ -92,7 +96,9 @@ impl EncodeState {
             code_size: min_size + 1,
             buffer: 0,
             bits_in_buffer: 0,
-        }
+        };
+        state.buffer_code(clear_code);
+        state
     }
 }
 
@@ -107,7 +113,15 @@ impl Stateful for EncodeState {
             }
 
             if inp.is_empty() && self.has_ended {
-                self.buffer_code(self.clear_code + 1);
+                if self.current_code != self.clear_code + 1 {
+                    if self.current_code != self.clear_code {
+                        self.buffer_code(self.current_code);
+                    }
+                    self.buffer_code(self.clear_code + 1);
+                    self.current_code = self.clear_code + 1;
+                    self.buffer_pad();
+                }
+
                 break;
             }
 
@@ -125,7 +139,9 @@ impl Stateful for EncodeState {
                     Ok(code) => self.current_code = code,
                     Err(_) => {
                         next_code = Some(self.current_code);
-                        self.current_code = self.clear_code;
+
+                        self.current_code = u16::from(byte);
+                        break;
                     },
                 }
             }
@@ -140,14 +156,17 @@ impl Stateful for EncodeState {
             }
         }
 
-        if inp.is_empty() && self.has_ended {
-            self.flush_out(&mut out);
+        let mut status = Ok(LzwStatus::Ok);
+        if inp.is_empty() && self.current_code == self.clear_code + 1 {
+            if !self.flush_out(&mut out) {
+                status = Ok(LzwStatus::Done);
+            }
         }
 
         StreamResult {
             consumed_in: c_in - inp.len(),
             consumed_out: c_out - out.len(),
-            status: Ok(LzwStatus::Ok),
+            status,
         }
     }
 
@@ -168,20 +187,25 @@ impl EncodeState {
     fn flush_out(&mut self, out: &mut &mut [u8]) -> bool {
         let want = usize::from(self.bits_in_buffer/8);
         let count = want.min((*out).len());
-        let mut bytes = core::mem::replace(out, &mut []).iter_mut();
+        let (bytes, tail) = core::mem::replace(out, &mut []).split_at_mut(count);
+        *out = tail;
 
-        for b in bytes.by_ref().take(count) {
-            *b = (self.buffer & 0xff00_0000_0000_0000) as u8;
+        for b in bytes {
+            *b = ((self.buffer & 0xff00_0000_0000_0000) >> 56) as u8;
             self.buffer <<= 8;
             self.bits_in_buffer -= 8;
         }
 
-        *out = bytes.into_slice();
         count < want
     }
 
+    fn buffer_pad(&mut self) {
+        let to_byte = self.bits_in_buffer.wrapping_neg() & 0x7;
+        self.bits_in_buffer += to_byte;
+    }
+
     fn buffer_code(&mut self, code: Code) {
-        let shift = 64 - self.bits_in_buffer + self.code_size;
+        let shift = 64 - self.bits_in_buffer - self.code_size;
         self.buffer |= u64::from(code) << shift;
         self.bits_in_buffer += self.code_size;
     }

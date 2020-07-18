@@ -22,3 +22,9 @@ members = ["."]
 [[bin]]
 name = "diff"
 path = "fuzz_targets/diff.rs"
+
+[[bin]]
+name = "roundtrip"
+path = "fuzz_targets/roundtrip.rs"
+test = false
+doc = false
