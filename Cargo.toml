@@ -15,6 +15,11 @@ bench = false
 criterion = "0.3.1"
 
 [features]
+# Enable usage of the `alloc` crate.
+alloc = []
+# Enable usage of the standard library and in particular any interface that
+# requires the io interfaces `Read` and `Write`.
+std = ["alloc"]
 default = ["raii_no_panic"]
 raii_no_panic = []
 
