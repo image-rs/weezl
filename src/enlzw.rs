@@ -247,6 +247,9 @@ impl Tree {
         // Keep entry for clear code.
         self.complex.truncate(1);
         self.keys.truncate((1 << min_size) + 2);
+        for k in self.keys[..(1 << min_size) + 2].iter_mut() {
+            *k = FullKey::NoSuccessor.into();
+        }
     }
 
     fn at_key(&self, code: Code, ch: u8) -> Option<Code> {
