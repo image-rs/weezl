@@ -113,23 +113,24 @@ impl Stateful for EncodeState {
             }
 
             if inp.is_empty() && self.has_ended {
-                if self.current_code != self.clear_code + 1 {
+                let end = self.end_code();
+                if self.current_code != end {
                     if self.current_code != self.clear_code {
                         self.buffer_code(self.current_code);
+
+                        // When reading this code, the decoder will add an extra entry to its table
+                        // before reading th end code. Thusly, it may increase its code size based
+                        // on this additional entry.
+                        if self.tree.keys.len() + 1 > (1 << self.code_size) && self.code_size < MAX_CODESIZE {
+                            self.code_size += 1;
+                        }
                     }
-                    self.buffer_code(self.clear_code + 1);
-                    self.current_code = self.clear_code + 1;
+                    self.buffer_code(end);
+                    self.current_code = end;
                     self.buffer_pad();
                 }
 
                 break;
-            }
-
-            if self.tree.keys.len() == MAX_ENTRIES {
-                self.buffer_code(self.clear_code);
-                self.tree.reset(self.min_size);
-                self.current_code = self.clear_code;
-                continue;
             }
 
             let mut next_code = None;
@@ -152,6 +153,17 @@ impl Stateful for EncodeState {
                 None => break,
                 Some(code) => {
                     self.buffer_code(code);
+
+                    if self.tree.keys.len() > (1 << self.code_size) && self.code_size < MAX_CODESIZE {
+                        self.code_size += 1;
+                    }
+
+                    if self.tree.keys.len() > MAX_ENTRIES {
+                        self.buffer_code(self.clear_code);
+                        self.tree.reset(self.min_size);
+                        self.current_code = self.clear_code;
+                        self.code_size = self.min_size + 1;
+                    }
                 }
             }
         }
@@ -197,6 +209,10 @@ impl EncodeState {
         }
 
         count < want
+    }
+
+    fn end_code(&self) -> Code {
+        self.clear_code + 1
     }
 
     fn buffer_pad(&mut self) {
