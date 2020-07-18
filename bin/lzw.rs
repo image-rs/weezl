@@ -1,9 +1,8 @@
 use std::{env, io, fs, process};
-use std::io::{BufWriter};
 use std::path::PathBuf;
 
 extern crate weezl;
-use weezl::{MsbWriter, relzw};
+use weezl::{enlzw, relzw};
 
 fn main() {
     let mut args = env::args().skip(1);
@@ -33,19 +32,16 @@ fn main() {
 
     let result = match (input, operation) {
         (Input::File(file), Operation::Encode) => (|| {
-            let writer = BufWriter::new(out);
-            weezl::encode(
-                fs::File::open(file)?,
-                MsbWriter::new(writer),
-                min_code)
+            let data = fs::File::open(file)?;
+            let file = io::BufReader::with_capacity(1 << 26, data);
+
+            let mut encoder = enlzw::Encoder::new(relzw::ByteOrder::Msb, 8);
+            encoder.encode_all(file, out).status
         })(),
         (Input::Stdin, Operation::Encode) => {
-            let writer = BufWriter::new(out);
-            let stdin = io::stdin();
-            weezl::encode(
-                stdin.lock(),
-                MsbWriter::new(writer),
-                min_code)
+            let file = io::BufReader::with_capacity(1 << 26, io::stdin());
+            let mut encoder = enlzw::Encoder::new(relzw::ByteOrder::Msb, 8);
+            encoder.encode_all(file, out).status
         },
         (Input::File(file), Operation::Decode) => (|| {
             let data = fs::File::open(file)?;
