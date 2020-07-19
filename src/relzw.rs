@@ -5,6 +5,11 @@ pub struct Decoder {
     state: Box<dyn Stateful + Send + 'static>,
 }
 
+pub struct IntoStream<'d, W> {
+    decoder: &'d mut Decoder,
+    writer: W,
+}
+
 trait Stateful {
     fn advance(&mut self, inp: &[u8], out: &mut [u8]) -> StreamResult;
     fn has_ended(&self) -> bool;
@@ -95,7 +100,26 @@ impl Decoder {
         self.state.advance(inp, out)
     }
 
-    pub fn decode_all(&mut self, mut read: impl BufRead, mut write: impl Write) -> AllResult {
+    pub fn into_stream<W: Write>(&mut self, writer: W) -> IntoStream<'_, W> {
+        IntoStream { decoder: self, writer }
+    }
+
+    pub fn has_ended(&self) -> bool {
+        self.state.has_ended()
+    }
+}
+
+impl<W: Write> IntoStream<'_, W> {
+    pub fn decode(mut self, read: impl BufRead) -> AllResult {
+        self.decode_part(read, false)
+    }
+
+    pub fn decode_all(mut self, read: impl BufRead) -> AllResult {
+        self.decode_part(read, true)
+    }
+
+    fn decode_part(&mut self, mut read: impl BufRead, finish: bool) -> AllResult {
+        let IntoStream { decoder, writer } = self;
         enum Progress {
             Ok,
             Done,
@@ -111,7 +135,7 @@ impl Decoder {
         let once = move || {
             let data = read.fill_buf()?;
 
-            let result = self.decode_bytes(data, &mut outbuf[..]);
+            let result = decoder.decode_bytes(data, &mut outbuf[..]);
             *read_bytes += result.consumed_in;
             *write_bytes += result.consumed_out;
             read.consume(result.consumed_in);
@@ -121,17 +145,21 @@ impl Decoder {
                 ))?;
 
             if let LzwStatus::Done = done {
-                write.write_all(&outbuf[..result.consumed_out])?;
+                writer.write_all(&outbuf[..result.consumed_out])?;
                 return Ok(Progress::Done);
             }
 
             if let LzwStatus::NoProgress = done {
-                return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof, "No more data but no end marker detected"
-                    ));
+                if finish {
+                    return Err(io::Error::new(
+                            io::ErrorKind::UnexpectedEof, "No more data but no end marker detected"
+                        ));
+                } else {
+                    return Ok(Progress::Done);
+                }
             }
 
-            write.write_all(&outbuf[..result.consumed_out])?;
+            writer.write_all(&outbuf[..result.consumed_out])?;
             Ok(Progress::Ok)
         };
 
@@ -149,10 +177,6 @@ impl Decoder {
             bytes_written,
             status,
         }
-    }
-
-    pub fn has_ended(&self) -> bool {
-        self.state.has_ended()
     }
 }
 

@@ -9,7 +9,7 @@ fn main() {
         let stdout = BufWriter::new(stdout.lock());
         let stdin = io::stdin();
         let stdin = stdin.lock();
-        decoder.decode_all(stdin, stdout).status?;
+        decoder.into_stream(stdout).decode_all(stdin).status?;
         Ok(())
     })() {
         Ok(()) => (),

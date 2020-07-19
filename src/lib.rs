@@ -20,11 +20,8 @@
 //! let mut compressed = vec![];
 //!
 //! let mut enc = Encoder::new(ByteOrder::Msb, size);
-//! enc.encode_bytes(data)
-//!     {
-//!         let mut enc = Encoder::new(LsbWriter::new(&mut compressed), size).unwrap();
-//!         enc.encode_bytes(data).unwrap();
-//!     }
+//! let result = enc.into_stream(&mut compressed).encode(&data[..]);
+//! result.status.unwrap();
 //! ```
 pub(crate) const MAX_CODESIZE: u8 = 12;
 pub(crate) const MAX_ENTRIES: usize = 1 << MAX_CODESIZE as usize;

@@ -36,24 +36,24 @@ fn main() {
             let file = io::BufReader::with_capacity(1 << 26, data);
 
             let mut encoder = enlzw::Encoder::new(ByteOrder::Msb, 8);
-            encoder.encode_all(file, out).status
+            encoder.into_stream(out).encode_all(file).status
         })(),
         (Input::Stdin, Operation::Encode) => {
-            let file = io::BufReader::with_capacity(1 << 26, io::stdin());
+            let input = io::BufReader::with_capacity(1 << 26, io::stdin());
             let mut encoder = enlzw::Encoder::new(ByteOrder::Msb, 8);
-            encoder.encode_all(file, out).status
+            encoder.into_stream(out).encode_all(input).status
         },
         (Input::File(file), Operation::Decode) => (|| {
             let data = fs::File::open(file)?;
             let file = io::BufReader::with_capacity(1 << 26, data);
 
             let mut decoder = relzw::Decoder::new(ByteOrder::Msb, 8);
-            decoder.decode_all(file, out).status
+            decoder.into_stream(out).decode_all(file).status
         })(),
         (Input::Stdin, Operation::Decode) => {
             let input = io::BufReader::with_capacity(1 << 26, io::stdin());
             let mut decoder = relzw::Decoder::new(ByteOrder::Msb, 8);
-            decoder.decode_all(input, out).status
+            decoder.into_stream(out).decode_all(input).status
         }
     };
 

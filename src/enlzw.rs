@@ -8,6 +8,11 @@ pub struct Encoder {
     state: Box<dyn Stateful + Send + 'static>,
 }
 
+pub struct IntoStream<'d, W> {
+    encoder: &'d mut Encoder,
+    writer: W,
+}
+
 trait Stateful {
     fn advance(&mut self, inp: &[u8], out: &mut [u8]) -> StreamResult;
     fn mark_ended(&mut self) -> bool;
@@ -77,7 +82,26 @@ impl Encoder {
         self.state.advance(inp, out)
     }
 
-    pub fn encode_all(&mut self, mut read: impl BufRead, mut write: impl Write) -> AllResult {
+    pub fn into_stream<W: Write>(&mut self, writer: W) -> IntoStream<'_, W> {
+        IntoStream { encoder: self, writer }
+    }
+
+    pub fn finish(&mut self) {
+        self.state.mark_ended();
+    }
+}
+
+impl<W: Write> IntoStream<'_, W> {
+    pub fn encode(mut self, read: impl BufRead) -> AllResult {
+        self.encode_part(read, false)
+    }
+
+    pub fn encode_all(mut self, read: impl BufRead) -> AllResult {
+        self.encode_part(read, true)
+    }
+
+    fn encode_part(&mut self, mut read: impl BufRead, finish: bool) -> AllResult {
+        let IntoStream { encoder, writer } = self;
         enum Progress {
             Ok,
             Done,
@@ -94,10 +118,14 @@ impl Encoder {
             let data = read.fill_buf()?;
 
             if data.is_empty() {
-                self.finish();
+                if finish {
+                    encoder.finish();
+                } else {
+                    return Ok(Progress::Done)
+                }
             }
 
-            let result = self.encode_bytes(data, &mut outbuf[..]);
+            let result = encoder.encode_bytes(data, &mut outbuf[..]);
             *read_bytes += result.consumed_in;
             *write_bytes += result.consumed_out;
             read.consume(result.consumed_in);
@@ -107,7 +135,7 @@ impl Encoder {
                 ))?;
 
             if let LzwStatus::Done = done {
-                write.write_all(&outbuf[..result.consumed_out])?;
+                writer.write_all(&outbuf[..result.consumed_out])?;
                 return Ok(Progress::Done);
             }
 
@@ -117,7 +145,7 @@ impl Encoder {
                     ));
             }
 
-            write.write_all(&outbuf[..result.consumed_out])?;
+            writer.write_all(&outbuf[..result.consumed_out])?;
             Ok(Progress::Ok)
         };
 
@@ -136,10 +164,6 @@ impl Encoder {
             bytes_written,
             status,
         }
-    }
-
-    pub fn finish(&mut self) {
-        self.state.mark_ended();
     }
 }
 
