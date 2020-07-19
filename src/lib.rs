@@ -21,25 +21,11 @@
 //!         let mut enc = Encoder::new(LsbWriter::new(&mut compressed), size).unwrap();
 //!         enc.encode_bytes(data).unwrap();
 //!     }
+pub(crate) const MAX_CODESIZE: u8 = 12;
+pub(crate) const MAX_ENTRIES: usize = 1 << MAX_CODESIZE as usize;
 
-mod lzw;
+/// Alias for a LZW code point
+pub(crate) type Code = u16;
+
 pub mod enlzw;
 pub mod relzw;
-mod bitstream;
-
-pub use lzw::{
-    Decoder,
-    DecoderEarlyChange,
-    Encoder,
-    encode
-};
-
-pub use bitstream::{
-    BitReader,
-    BitWriter,
-    LsbReader,
-    LsbWriter,
-    MsbReader,
-    MsbWriter,
-    Bits
-};

@@ -1,4 +1,4 @@
-use crate::lzw::{MAX_CODESIZE, MAX_ENTRIES, Code};
+use crate::{MAX_CODESIZE, MAX_ENTRIES, Code};
 use std::io::{self, BufRead, Write};
 
 pub struct Decoder {

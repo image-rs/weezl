@@ -1,8 +1,8 @@
 //! A rebuilt encoder.
-use crate::lzw::{MAX_CODESIZE, MAX_ENTRIES, Code};
+use crate::{MAX_CODESIZE, MAX_ENTRIES, Code};
 use std::io::{self, BufRead, Write};
 
-use crate::relzw::{AllResult, ByteOrder, LzwStatus, LzwError, StreamResult};
+use crate::relzw::{AllResult, ByteOrder, LzwStatus, StreamResult};
 
 pub struct Encoder {
     state: Box<dyn Stateful + Send + 'static>,
