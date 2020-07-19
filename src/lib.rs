@@ -23,6 +23,7 @@
 //!     }
 
 mod lzw;
+pub mod enlzw;
 pub mod relzw;
 mod bitstream;
 
