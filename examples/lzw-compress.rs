@@ -1,31 +1,19 @@
 //! Compresses the input from stdin and writes the result to stdout.
 
-extern crate lzw;
-
-use std::io::{self, Write, BufRead};
+use std::io::{self, BufWriter};
 
 fn main() {
     match (|| -> io::Result<()> {
-        let mut encoder = try!(
-            lzw::Encoder::new(lzw::LsbWriter::new(io::stdout()), 8)
-        );
+        let mut encoder = weezl::enlzw::Encoder::new(weezl::ByteOrder::Msb, 8);
         let stdin = io::stdin();
-        let mut stdin = stdin.lock();
-        loop {
-            let len = {
-                let buf = try!(stdin.fill_buf());
-                try!(encoder.encode_bytes(buf));
-                buf.len()
-            };
-            if len == 0 {
-                break
-            }
-            stdin.consume(len);
-        }
+        let stdin = stdin.lock();
+        let stdout = io::stdout();
+        let stdout = BufWriter::new(stdout.lock());
+        encoder.encode_all(stdin, stdout).status?;
         Ok(())
     })() {
         Ok(()) => (),
-        Err(err) => { let _ = write!(io::stderr(), "{}", err); }
+        Err(err) => eprintln!("{}", err),
     }
     
 }

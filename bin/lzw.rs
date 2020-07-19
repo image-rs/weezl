@@ -2,7 +2,7 @@ use std::{env, io, fs, process};
 use std::path::PathBuf;
 
 extern crate weezl;
-use weezl::{enlzw, relzw};
+use weezl::{enlzw, relzw, ByteOrder};
 
 fn main() {
     let mut args = env::args().skip(1);
@@ -35,24 +35,24 @@ fn main() {
             let data = fs::File::open(file)?;
             let file = io::BufReader::with_capacity(1 << 26, data);
 
-            let mut encoder = enlzw::Encoder::new(relzw::ByteOrder::Msb, 8);
+            let mut encoder = enlzw::Encoder::new(ByteOrder::Msb, 8);
             encoder.encode_all(file, out).status
         })(),
         (Input::Stdin, Operation::Encode) => {
             let file = io::BufReader::with_capacity(1 << 26, io::stdin());
-            let mut encoder = enlzw::Encoder::new(relzw::ByteOrder::Msb, 8);
+            let mut encoder = enlzw::Encoder::new(ByteOrder::Msb, 8);
             encoder.encode_all(file, out).status
         },
         (Input::File(file), Operation::Decode) => (|| {
             let data = fs::File::open(file)?;
             let file = io::BufReader::with_capacity(1 << 26, data);
 
-            let mut decoder = relzw::Decoder::new(relzw::ByteOrder::Msb, 8);
+            let mut decoder = relzw::Decoder::new(ByteOrder::Msb, 8);
             decoder.decode_all(file, out).status
         })(),
         (Input::Stdin, Operation::Decode) => {
             let input = io::BufReader::with_capacity(1 << 26, io::stdin());
-            let mut decoder = relzw::Decoder::new(relzw::ByteOrder::Msb, 8);
+            let mut decoder = relzw::Decoder::new(ByteOrder::Msb, 8);
             decoder.decode_all(input, out).status
         }
     };

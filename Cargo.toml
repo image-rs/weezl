@@ -6,6 +6,7 @@ description = "Fast LZW compression and decompression."
 authors = ["HeroicKatora <andreas.molzer@gmx.de>"]
 readme = "README.md"
 repository = "https://github.com/image-rs/lzw.git"
+edition = "2018"
 
 [lib]
 name = "weezl"

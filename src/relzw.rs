@@ -1,4 +1,4 @@
-use crate::{MAX_CODESIZE, MAX_ENTRIES, Code};
+use crate::{MAX_CODESIZE, MAX_ENTRIES, ByteOrder, Code};
 use std::io::{self, BufRead, Write};
 
 pub struct Decoder {
@@ -70,11 +70,6 @@ pub struct AllResult {
     /// The total number of bytes written into the writer.
     pub bytes_written: usize,
     pub status: std::io::Result<()>,
-}
-
-pub enum ByteOrder {
-    Msb,
-    Lsb,
 }
 
 #[derive(Debug, Clone, Copy)]
