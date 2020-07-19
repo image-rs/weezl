@@ -222,7 +222,6 @@ impl Stateful for EncodeState {
                     if self.tree.keys.len() > MAX_ENTRIES {
                         self.buffer_code(self.clear_code);
                         self.tree.reset(self.min_size);
-                        self.current_code = self.clear_code;
                         self.code_size = self.min_size + 1;
                     }
                 }
@@ -376,7 +375,7 @@ impl Tree {
                 let new_key = FullKey::Full(self.complex.len() as u16);
                 let simples = &self.simples[usize::from(idx)];
                 self.complex.push(Full {
-                    char_continuation: [0; 256],
+                    char_continuation: [Code::MAX; 256],
                 });
                 let full = self.complex.last_mut().unwrap();
                 for (&pch, &pcont) in simples.chars.iter().zip(simples.codes.iter()) {
