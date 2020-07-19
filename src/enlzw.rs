@@ -72,7 +72,12 @@ struct Full {
 }
 
 impl Encoder {
-    pub fn new(_: ByteOrder, size: u8) -> Self {
+    pub fn new(order: ByteOrder, size: u8) -> Self {
+        match order {
+            ByteOrder::Lsb => todo!("Not yet implemented"),
+            ByteOrder::Msb => {},
+        }
+
         Encoder {
             state: Box::new(EncodeState::new(size)),
         }

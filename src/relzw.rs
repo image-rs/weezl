@@ -24,31 +24,27 @@ struct Link {
 struct DecodeState {
     /// The original minimum code size.
     min_size: u8,
-
     /// The table of decoded codes.
     table: Table,
-
     /// The buffer of decoded data.
     buffer: Buffer,
-
     /// The link which we are still decoding and its original code.
     last: Option<(Code, Link)>,
-
     /// The current code size.
     code_size: u8,
+    /// A precomputed mask for this code.
     code_mask: u16,
-
+    /// The next code entry.
     next_code: Code,
-
     /// Code to reset all tables.
     clear_code: Code,
-
     /// Code to signal the end of the stream.
     end_code: Code,
-
+    /// A stored flag if the end code has already appeared.
     has_ended: bool,
-
+    /// A buffer of individual bits.
     bit_buffer: u64,
+    /// The number of bits in the buffer.
     bits: u8,
 }
 
@@ -90,7 +86,12 @@ pub enum LzwError {
 }
 
 impl Decoder {
-    pub fn new(_: ByteOrder, size: u8) -> Self {
+    pub fn new(order: ByteOrder, size: u8) -> Self {
+        match order {
+            ByteOrder::Lsb => todo!("Not yet implemented"),
+            ByteOrder::Msb => {},
+        }
+
         Decoder {
             state: Box::new(DecodeState::new(size)),
         }
