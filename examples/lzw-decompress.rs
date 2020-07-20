@@ -4,7 +4,7 @@ use std::io::{self, BufWriter};
 
 fn main() {
     match (|| -> io::Result<()> {
-        let mut decoder = weezl::relzw::Decoder::new(weezl::ByteOrder::Msb, 8);
+        let mut decoder = weezl::relzw::Decoder::new(weezl::BitOrder::Msb, 8);
         let stdout = io::stdout();
         let stdout = BufWriter::new(stdout.lock());
         let stdin = io::stdin();

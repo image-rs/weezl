@@ -1,5 +1,5 @@
 //! A rebuilt encoder.
-use crate::{MAX_CODESIZE, MAX_ENTRIES, ByteOrder, Code};
+use crate::{MAX_CODESIZE, MAX_ENTRIES, BitOrder, Code};
 use crate::relzw::{AllResult, LzwStatus, StreamResult};
 
 use std::io::{self, BufRead, Write};
@@ -72,10 +72,10 @@ struct Full {
 }
 
 impl Encoder {
-    pub fn new(order: ByteOrder, size: u8) -> Self {
+    pub fn new(order: BitOrder, size: u8) -> Self {
         match order {
-            ByteOrder::Lsb => todo!("Not yet implemented"),
-            ByteOrder::Msb => {},
+            BitOrder::Lsb => todo!("Not yet implemented"),
+            BitOrder::Msb => {},
         }
 
         Encoder {

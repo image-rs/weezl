@@ -14,12 +14,12 @@
 //! Examplary use of the encoder:
 //!
 //! ```
-//! use weezl::{ByteOrder, enlzw::Encoder};
+//! use weezl::{BitOrder, enlzw::Encoder};
 //! let size = 8;
 //! let data = b"TOBEORNOTTOBEORTOBEORNOT";
 //! let mut compressed = vec![];
 //!
-//! let mut enc = Encoder::new(ByteOrder::Msb, size);
+//! let mut enc = Encoder::new(BitOrder::Msb, size);
 //! let result = enc.into_stream(&mut compressed).encode(&data[..]);
 //! result.status.unwrap();
 //! ```
@@ -29,8 +29,12 @@ pub(crate) const MAX_ENTRIES: usize = 1 << MAX_CODESIZE as usize;
 /// Alias for a LZW code point
 pub(crate) type Code = u16;
 
-pub enum ByteOrder {
+/// The order of bits in bytes.
+pub enum BitOrder {
+    /// The most significant bit is processed first.
     Msb,
+    /// The least significant bit is processed first.
+    /// TODO: Not yet implemented everywhere.
     Lsb,
 }
 
