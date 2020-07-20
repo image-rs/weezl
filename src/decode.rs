@@ -31,7 +31,7 @@ struct Link {
 }
 
 #[derive(Default)]
-struct CodeBuffer {
+struct MsbBuffer {
     /// A buffer of individual bits.
     bit_buffer: u64,
     /// A precomputed mask for this code.
@@ -42,7 +42,19 @@ struct CodeBuffer {
     bits: u8,
 }
 
-struct DecodeState {
+trait CodeBuffer {
+    fn new(min_size: u8) -> Self;
+    fn reset(&mut self, min_size: u8);
+    fn bump_code_size(&mut self);
+    /// Retrieve the next symbol, refilling if necessary.
+    fn next_symbol(&mut self, inp: &mut &[u8]) -> Option<Code>;
+    /// Refill the internal buffer.
+    fn refill_bits(&mut self, inp: &mut &[u8]);
+    /// Get the next buffered code word.
+    fn get_bits(&mut self) -> Option<Code>;
+}
+
+struct DecodeState<CodeBuffer> {
     /// The original minimum code size.
     min_size: u8,
     /// The table of decoded codes.
@@ -109,7 +121,7 @@ impl Decoder {
         }
 
         Decoder {
-            state: Box::new(DecodeState::new(size)),
+            state: Box::new(DecodeState::<MsbBuffer>::new(size)),
         }
     }
 
@@ -211,7 +223,7 @@ impl<W: Write> IntoStream<'_, W> {
     }
 }
 
-impl DecodeState {
+impl<C: CodeBuffer> DecodeState<C> {
     fn new(min_size: u8) -> Self {
         DecodeState {
             min_size: min_size,
@@ -239,7 +251,7 @@ impl DecodeState {
     }
 }
 
-impl Stateful for DecodeState {
+impl<C: CodeBuffer> Stateful for DecodeState<C> {
     fn has_ended(&self) -> bool {
         self.has_ended
     }
@@ -479,7 +491,7 @@ impl Stateful for DecodeState {
     }
 }
 
-impl DecodeState {
+impl<C: CodeBuffer> DecodeState<C> {
     fn next_symbol(&mut self, inp: &mut &[u8]) -> Option<Code> {
         self.code_buffer.next_symbol(inp)
     }
@@ -497,9 +509,9 @@ impl DecodeState {
     }
 }
 
-impl CodeBuffer {
+impl CodeBuffer for MsbBuffer {
     fn new(min_size: u8) -> Self {
-        CodeBuffer {
+        MsbBuffer {
             code_size: min_size + 1,
             code_mask: (1u16 << (min_size + 1)) - 1,
             bit_buffer: 0,
