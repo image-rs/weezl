@@ -16,18 +16,20 @@ bench = false
 criterion = "0.3.1"
 
 [features]
-# Enable usage of the `alloc` crate.
-alloc = []
+default = ["std"]
 # Enable usage of the standard library and in particular any interface that
 # requires the io interfaces `Read` and `Write`.
 std = ["alloc"]
-default = ["raii_no_panic"]
-raii_no_panic = []
+# Enable usage of the `alloc` crate. You should always have this feature
+# enabled. Without this feature neither the encoder nor the decoder exists.
+# This is purely a reservation for future possibilities.
+alloc = []
 
 [[bin]]
 name = "lzw"
 path = "bin/lzw.rs"
 bench = false
+required-features = ["std"]
 
 [[bench]]
 name = "msb8"

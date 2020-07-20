@@ -1,13 +1,22 @@
-//! A rebuilt encoder.
+//! A module for all encoding needs.
 use crate::{MAX_CODESIZE, MAX_ENTRIES, BitOrder, Code};
-use crate::decode::{AllResult, LzwStatus, StreamResult};
+use crate::decode::{LzwStatus, StreamResult};
 
+use crate::alloc::{boxed::Box, vec::Vec};
+#[cfg(feature = "std")]
 use std::io::{self, BufRead, Write};
+#[cfg(feature = "std")]
+use crate::decode::AllResult;
 
 pub struct Encoder {
     state: Box<dyn Stateful + Send + 'static>,
 }
 
+/// A encoding stream sink.
+///
+/// See [`Encoder::into_stream`] on how to create this type and more information.
+///
+/// [`Encoder::into_stream`]: struct.Encoder.html#method.into_stream
 pub struct IntoStream<'d, W> {
     encoder: &'d mut Encoder,
     writer: W,
@@ -83,24 +92,45 @@ impl Encoder {
         }
     }
 
+    /// Encode some bytes from `inp` into `out`.
+    ///
+    /// See [`into_stream`] for high-level functions (this interface is only available with the
+    /// `std` feature) and [`finish`] for marking the input data as complete.
+    ///
+    /// [`into_stream`]: #method.into_stream
+    /// [`finish`]: #method.finish
     pub fn encode_bytes(&mut self, inp: &[u8], out: &mut [u8]) -> StreamResult {
         self.state.advance(inp, out)
     }
 
+    /// Construct a decoder into a writer.
+    #[cfg(feature = "std")]
     pub fn into_stream<W: Write>(&mut self, writer: W) -> IntoStream<'_, W> {
         IntoStream { encoder: self, writer }
     }
 
+    /// Mark the encoding as finished.
+    ///
+    /// In following calls to `encode_bytes` the encoder will try to emit an end code after
+    /// encoding all of `inp`. It's not recommended, but also not unsound, to use different byte
+    /// slices in different calls from this point forward. The behaviour after the end marker has
+    /// been written is unspecified but again you can rely on its being sound.
     pub fn finish(&mut self) {
         self.state.mark_ended();
     }
 }
 
+#[cfg(feature = "std")]
 impl<W: Write> IntoStream<'_, W> {
-    pub fn encode(mut self, read: impl BufRead) -> AllResult {
+    /// Encode data from a reader.
+    ///
+    /// This will drain the supplied reader. It will not encode an end marker after all data has
+    /// been processed.
+    pub fn encode(&mut self, read: impl BufRead) -> AllResult {
         self.encode_part(read, false)
     }
 
+    /// Encode data from a reader and an end marker.
     pub fn encode_all(mut self, read: impl BufRead) -> AllResult {
         self.encode_part(read, true)
     }

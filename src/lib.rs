@@ -23,6 +23,13 @@
 //! let result = enc.into_stream(&mut compressed).encode(&data[..]);
 //! result.status.unwrap();
 //! ```
+#![cfg_attr(not(feature = "std"), no_std)]
+
+#[cfg(all(feature = "alloc", not(feature = "std")))]
+extern crate alloc;
+#[cfg(all(feature = "alloc", feature = "std"))]
+use std as alloc;
+
 pub(crate) const MAX_CODESIZE: u8 = 12;
 pub(crate) const MAX_ENTRIES: usize = 1 << MAX_CODESIZE as usize;
 
@@ -38,5 +45,7 @@ pub enum BitOrder {
     Lsb,
 }
 
+#[cfg(feature = "alloc")]
 pub mod encode;
+#[cfg(feature = "alloc")]
 pub mod decode;

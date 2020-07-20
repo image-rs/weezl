@@ -1,10 +1,19 @@
+//! A module for all decoding needs.
 use crate::{MAX_CODESIZE, MAX_ENTRIES, BitOrder, Code};
+
+use crate::alloc::{boxed::Box, vec, vec::Vec};
+#[cfg(feature = "std")]
 use std::io::{self, BufRead, Write};
 
 pub struct Decoder {
     state: Box<dyn Stateful + Send + 'static>,
 }
 
+/// A decoding stream sink.
+///
+/// See [`Decoder::into_stream`] on how to create this type and more information.
+///
+/// [`Decoder::into_stream`]: struct.Decoder.html#method.into_stream
 pub struct IntoStream<'d, W> {
     decoder: &'d mut Decoder,
     writer: W,
@@ -65,6 +74,7 @@ pub struct StreamResult {
     pub status: Result<LzwStatus, LzwError>,
 }
 
+#[cfg(feature = "std")]
 pub struct AllResult {
     /// The total number of bytes consumed from the reader.
     pub bytes_read: usize,
@@ -97,24 +107,38 @@ impl Decoder {
         }
     }
 
+    /// Decode some bytes from `inp` and write result to `out`.
+    ///
+    /// See [`into_stream`] for high-level functions (this interface is only available with the
+    /// `std` feature).
+    ///
+    /// [`into_stream`]: #method.into_stream
     pub fn decode_bytes(&mut self, inp: &[u8], out: &mut [u8]) -> StreamResult {
         self.state.advance(inp, out)
     }
 
+    /// Construct a decoder into a writer.
+    #[cfg(feature = "std")]
     pub fn into_stream<W: Write>(&mut self, writer: W) -> IntoStream<'_, W> {
         IntoStream { decoder: self, writer }
     }
 
+    /// Check if the decoding has finished.
     pub fn has_ended(&self) -> bool {
         self.state.has_ended()
     }
 }
 
+#[cfg(feature = "std")]
 impl<W: Write> IntoStream<'_, W> {
-    pub fn decode(mut self, read: impl BufRead) -> AllResult {
+    /// Decode data from a reader.
+    ///
+    /// This will read data until the stream is empty or an end marker is reached.
+    pub fn decode(&mut self, read: impl BufRead) -> AllResult {
         self.decode_part(read, false)
     }
 
+    /// Decode data from a reader, requiring an end marker.
     pub fn decode_all(mut self, read: impl BufRead) -> AllResult {
         self.decode_part(read, true)
     }
