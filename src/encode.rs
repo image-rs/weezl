@@ -1,6 +1,6 @@
 //! A rebuilt encoder.
 use crate::{MAX_CODESIZE, MAX_ENTRIES, BitOrder, Code};
-use crate::relzw::{AllResult, LzwStatus, StreamResult};
+use crate::decode::{AllResult, LzwStatus, StreamResult};
 
 use std::io::{self, BufRead, Write};
 

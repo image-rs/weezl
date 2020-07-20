@@ -14,7 +14,7 @@
 //! Examplary use of the encoder:
 //!
 //! ```
-//! use weezl::{BitOrder, enlzw::Encoder};
+//! use weezl::{BitOrder, encode::Encoder};
 //! let size = 8;
 //! let data = b"TOBEORNOTTOBEORTOBEORNOT";
 //! let mut compressed = vec![];
@@ -38,5 +38,5 @@ pub enum BitOrder {
     Lsb,
 }
 
-pub mod enlzw;
-pub mod relzw;
+pub mod encode;
+pub mod decode;

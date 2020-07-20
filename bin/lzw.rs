@@ -2,7 +2,7 @@ use std::{env, io, fs, process};
 use std::path::PathBuf;
 
 extern crate weezl;
-use weezl::{enlzw, relzw, BitOrder};
+use weezl::{encode as enlzw, decode as delzw, BitOrder};
 
 fn main() {
     let mut args = env::args().skip(1);
@@ -47,12 +47,12 @@ fn main() {
             let data = fs::File::open(file)?;
             let file = io::BufReader::with_capacity(1 << 26, data);
 
-            let mut decoder = relzw::Decoder::new(BitOrder::Msb, 8);
+            let mut decoder = delzw::Decoder::new(BitOrder::Msb, 8);
             decoder.into_stream(out).decode_all(file).status
         })(),
         (Input::Stdin, Operation::Decode) => {
             let input = io::BufReader::with_capacity(1 << 26, io::stdin());
-            let mut decoder = relzw::Decoder::new(BitOrder::Msb, 8);
+            let mut decoder = delzw::Decoder::new(BitOrder::Msb, 8);
             decoder.into_stream(out).decode_all(input).status
         }
     };

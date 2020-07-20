@@ -3,7 +3,7 @@ extern crate weezl;
 
 use std::fs;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use weezl::relzw::{ByteOrder,Decoder,LzwStatus};
+use weezl::{BitOrder, decode::{Decoder, LzwStatus}};
 
 pub fn criterion_benchmark(c: &mut Criterion, file: &str) {
     let data = fs::read(file)
@@ -12,7 +12,7 @@ pub fn criterion_benchmark(c: &mut Criterion, file: &str) {
     let id = BenchmarkId::new(file, data.len());
     let mut outbuf = vec![0; 1 << 26]; // 64MB, what wuff uses..
     let mut decode_once = |data: &[u8]| {
-        let mut decoder = Decoder::new(ByteOrder::Msb, 8);
+        let mut decoder = Decoder::new(BitOrder::Msb, 8);
         let mut written = 0;
         let outbuf = outbuf.as_mut_slice();
         let mut data = data;
