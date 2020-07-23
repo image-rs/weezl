@@ -1,41 +1,15 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use weezl::{enlzw, relzw};
+use weezl::{BitOrder, encode, decode};
 
 fuzz_target!(|data: &[u8]| {
+    let mut encoder = encode::Encoder::new(BitOrder::Msb, 8);
+    let mut buffer = Vec::with_capacity(2*data.len() + 40);
+    let _ = encoder.into_stream(&mut buffer).encode_all(data);
 
-    let mut encoder = enlzw::Encoder::new(relzw::ByteOrder::Msb, 8);
-    encoder.finish();
-    let mut buffer = vec![0; 2*data.len() + 40];
-
-    let mut input = data;
-    let mut output = buffer.as_mut_slice();
-    let mut length = 0;
-
-    loop {
-        let result = encoder.encode_bytes(input, output);
-        input = &input[result.consumed_in..];
-        length += result.consumed_out;
-        output = &mut output[result.consumed_out..];
-
-        if let Err(_) = result.status {
-            break;
-        }
-
-        if let Ok(relzw::LzwStatus::NoProgress) = result.status {
-            break;
-        }
-
-        if let Ok(relzw::LzwStatus::Done) = result.status {
-            break;
-        }
-    }
-
-    buffer.truncate(length);
-
-    let mut decoder = relzw::Decoder::new(relzw::ByteOrder::Msb, 8);
+    let mut decoder = decode::Decoder::new(BitOrder::Msb, 8);
     let mut compare = vec![];
-    let result = decoder.decode_all(buffer.as_slice(), &mut compare);
+    let result = decoder.into_stream(&mut compare).decode_all(buffer.as_slice());
     // dbg!(buffer.as_slice());
     // dbg!(&result.status);
     assert!(result.status.is_ok(), "{:?}", result.status);
