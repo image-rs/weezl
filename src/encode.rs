@@ -274,7 +274,7 @@ impl<B: Buffer> Stateful for EncodeState<B> {
                         // When reading this code, the decoder will add an extra entry to its table
                         // before reading th end code. Thusly, it may increase its code size based
                         // on this additional entry.
-                        if self.tree.keys.len() > usize::from(self.buffer.max_code())
+                        if self.tree.keys.len() + 1 > usize::from(self.buffer.max_code()) + 1
                             && self.buffer.code_size() < MAX_CODESIZE
                         {
                             self.buffer.bump_code_size();
@@ -309,7 +309,7 @@ impl<B: Buffer> Stateful for EncodeState<B> {
                 Some(code) => {
                     self.buffer_code(code);
 
-                    if self.tree.keys.len() > usize::from(self.buffer.max_code())
+                    if self.tree.keys.len() > usize::from(self.buffer.max_code()) + 1
                         && self.buffer.code_size() < MAX_CODESIZE
                     {
                         self.buffer.bump_code_size();

@@ -359,9 +359,9 @@ impl<C: CodeBuffer> Stateful for DecodeState<C> {
                     out = tail;
                 }
 
-                let current_code = self.next_code + burst_size as u16;
+                let potential_code = self.next_code + burst_size as u16;
                 burst_size += 1;
-                if current_code == self.code_buffer.max_code() {
+                if potential_code == self.code_buffer.max_code() {
                     break;
                 }
 
@@ -461,15 +461,16 @@ impl<C: CodeBuffer> Stateful for DecodeState<C> {
                 last_decoded = Some(target);
             }
 
-            if self.next_code == self.code_buffer.max_code() && self.code_buffer.code_size() < MAX_CODESIZE {
-                self.bump_code_size();
-            }
-
             let new_link;
             // Each newly read code creates one new code/link based on the preceding code if we
             // have enough space to put it there.
             if !self.table.is_full() {
                 let link = self.table.derive(&link, cha, code);
+
+                if self.next_code == self.code_buffer.max_code() && self.code_buffer.code_size() < MAX_CODESIZE {
+                    self.bump_code_size();
+                }
+
                 self.next_code += 1;
                 new_link = link;
             } else {
