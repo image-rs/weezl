@@ -30,7 +30,45 @@ struct Link {
     byte: u8,
 }
 
-struct DecodeState {
+#[derive(Default)]
+struct MsbBuffer {
+    /// A buffer of individual bits. The oldest code is kept in the high-order bits.
+    bit_buffer: u64,
+    /// A precomputed mask for this code.
+    code_mask: u16,
+    /// The current code size.
+    code_size: u8,
+    /// The number of bits in the buffer.
+    bits: u8,
+}
+
+#[derive(Default)]
+struct LsbBuffer {
+    /// A buffer of individual bits. The oldest code is kept in the high-order bits.
+    bit_buffer: u64,
+    /// A precomputed mask for this code.
+    code_mask: u16,
+    /// The current code size.
+    code_size: u8,
+    /// The number of bits in the buffer.
+    bits: u8,
+}
+
+trait CodeBuffer {
+    fn new(min_size: u8) -> Self;
+    fn reset(&mut self, min_size: u8);
+    fn bump_code_size(&mut self);
+    /// Retrieve the next symbol, refilling if necessary.
+    fn next_symbol(&mut self, inp: &mut &[u8]) -> Option<Code>;
+    /// Refill the internal buffer.
+    fn refill_bits(&mut self, inp: &mut &[u8]);
+    /// Get the next buffered code word.
+    fn get_bits(&mut self) -> Option<Code>;
+    fn max_code(&self) -> Code;
+    fn code_size(&self) -> u8;
+}
+
+struct DecodeState<CodeBuffer> {
     /// The original minimum code size.
     min_size: u8,
     /// The table of decoded codes.
@@ -39,10 +77,6 @@ struct DecodeState {
     buffer: Buffer,
     /// The link which we are still decoding and its original code.
     last: Option<(Code, Link)>,
-    /// The current code size.
-    code_size: u8,
-    /// A precomputed mask for this code.
-    code_mask: u16,
     /// The next code entry.
     next_code: Code,
     /// Code to reset all tables.
@@ -51,10 +85,8 @@ struct DecodeState {
     end_code: Code,
     /// A stored flag if the end code has already appeared.
     has_ended: bool,
-    /// A buffer of individual bits.
-    bit_buffer: u64,
-    /// The number of bits in the buffer.
-    bits: u8,
+    /// The buffer for decoded words.
+    code_buffer: CodeBuffer,
 }
 
 struct Buffer {
@@ -97,13 +129,14 @@ pub enum LzwError {
 
 impl Decoder {
     pub fn new(order: BitOrder, size: u8) -> Self {
-        match order {
-            BitOrder::Lsb => todo!("Not yet implemented"),
-            BitOrder::Msb => {},
-        }
+        type Boxed = Box<dyn Stateful + Send + 'static>;
+        let state = match order {
+            BitOrder::Lsb => Box::new(DecodeState::<LsbBuffer>::new(size)) as Boxed,
+            BitOrder::Msb => Box::new(DecodeState::<MsbBuffer>::new(size)) as Boxed,
+        };
 
         Decoder {
-            state: Box::new(DecodeState::new(size)),
+            state,
         }
     }
 
@@ -205,7 +238,7 @@ impl<W: Write> IntoStream<'_, W> {
     }
 }
 
-impl DecodeState {
+impl<C: CodeBuffer> DecodeState<C> {
     fn new(min_size: u8) -> Self {
         DecodeState {
             min_size: min_size,
@@ -216,29 +249,24 @@ impl DecodeState {
             end_code: (1 << min_size) + 1,
             next_code: (1 << min_size) + 2,
             has_ended: false,
-            bit_buffer: 0,
-            bits: 0,
-            code_size: min_size + 1,
-            code_mask: (1u16 << (min_size + 1)) - 1,
+            code_buffer: CodeBuffer::new(min_size),
         }
     }
 
     fn init_tables(&mut self) {
-        self.code_size = self.min_size + 1;
-        self.code_mask = (1 << self.code_size) - 1;
+        self.code_buffer.reset(self.min_size);
         self.next_code = (1 << self.min_size) + 2;
         self.table.init(self.min_size);
     }
 
     fn reset_tables(&mut self) {
-        self.code_size = self.min_size + 1;
-        self.code_mask = (1 << self.code_size) - 1;
+        self.code_buffer.reset(self.min_size);
         self.next_code = (1 << self.min_size) + 2;
         self.table.clear(self.min_size);
     }
 }
 
-impl Stateful for DecodeState {
+impl<C: CodeBuffer> Stateful for DecodeState<C> {
     fn has_ended(&self) -> bool {
         self.has_ended
     }
@@ -331,9 +359,9 @@ impl Stateful for DecodeState {
                     out = tail;
                 }
 
-                let current_code = self.next_code + burst_size as u16;
+                let potential_code = self.next_code + burst_size as u16;
                 burst_size += 1;
-                if current_code == self.code_mask {
+                if potential_code == self.code_buffer.max_code() {
                     break;
                 }
 
@@ -433,15 +461,16 @@ impl Stateful for DecodeState {
                 last_decoded = Some(target);
             }
 
-            if self.next_code == self.code_mask && self.code_size < MAX_CODESIZE {
-                self.bump_code_size();
-            }
-
             let new_link;
             // Each newly read code creates one new code/link based on the preceding code if we
             // have enough space to put it there.
             if !self.table.is_full() {
                 let link = self.table.derive(&link, cha, code);
+
+                if self.next_code == self.code_buffer.max_code() && self.code_buffer.code_size() < MAX_CODESIZE {
+                    self.bump_code_size();
+                }
+
                 self.next_code += 1;
                 new_link = link;
             } else {
@@ -478,7 +507,39 @@ impl Stateful for DecodeState {
     }
 }
 
-impl DecodeState {
+impl<C: CodeBuffer> DecodeState<C> {
+    fn next_symbol(&mut self, inp: &mut &[u8]) -> Option<Code> {
+        self.code_buffer.next_symbol(inp)
+    }
+
+    fn bump_code_size(&mut self) {
+        self.code_buffer.bump_code_size()
+    }
+
+    fn refill_bits(&mut self, inp: &mut &[u8]) {
+        self.code_buffer.refill_bits(inp)
+    }
+
+    fn get_bits(&mut self) -> Option<Code> {
+        self.code_buffer.get_bits()
+    }
+}
+
+impl CodeBuffer for MsbBuffer {
+    fn new(min_size: u8) -> Self {
+        MsbBuffer {
+            code_size: min_size + 1,
+            code_mask: (1u16 << (min_size + 1)) - 1,
+            bit_buffer: 0,
+            bits: 0,
+        }
+    }
+
+    fn reset(&mut self, min_size: u8) {
+        self.code_size = min_size + 1;
+        self.code_mask = (1 << self.code_size) - 1;
+    }
+
     fn next_symbol(&mut self, inp: &mut &[u8]) -> Option<Code> {
         if self.bits < self.code_size {
             self.refill_bits(inp);
@@ -523,6 +584,83 @@ impl DecodeState {
         self.bit_buffer = rotbuf & !mask;
         self.bits -= self.code_size;
         Some((rotbuf & mask) as u16)
+    }
+
+    fn max_code(&self) -> Code {
+        self.code_mask
+    }
+
+    fn code_size(&self) -> u8 {
+        self.code_size
+    }
+}
+
+impl CodeBuffer for LsbBuffer {
+    fn new(min_size: u8) -> Self {
+        LsbBuffer {
+            code_size: min_size + 1,
+            code_mask: (1u16 << (min_size + 1)) - 1,
+            bit_buffer: 0,
+            bits: 0,
+        }
+    }
+
+    fn reset(&mut self, min_size: u8) {
+        self.code_size = min_size + 1;
+        self.code_mask = (1 << self.code_size) - 1;
+    }
+
+    fn next_symbol(&mut self, inp: &mut &[u8]) -> Option<Code> {
+        if self.bits < self.code_size {
+            self.refill_bits(inp);
+        }
+
+        self.get_bits()
+    }
+
+    fn bump_code_size(&mut self) {
+        self.code_size += 1;
+        self.code_mask = (self.code_mask << 1) | 1;
+    }
+
+    fn refill_bits(&mut self, inp: &mut &[u8]) {
+        let wish_count = (64 - self.bits) / 8;
+        let mut buffer = [0u8; 8];
+        let new_bits = match inp.get(..usize::from(wish_count)) {
+            Some(bytes) => {
+                buffer[..usize::from(wish_count)].copy_from_slice(bytes);
+                *inp = &inp[usize::from(wish_count)..];
+                wish_count * 8
+            }
+            None => {
+                let new_bits = inp.len() * 8;
+                buffer[..inp.len()].copy_from_slice(inp);
+                *inp = &[];
+                new_bits as u8
+            }
+        };
+        self.bit_buffer |= u64::from_be_bytes(buffer).swap_bytes() << self.bits;
+        self.bits += new_bits;
+    }
+
+    fn get_bits(&mut self) -> Option<Code> {
+        if self.bits < self.code_size {
+            return None;
+        }
+
+        let mask = u64::from(self.code_mask);
+        let code = self.bit_buffer & mask;
+        self.bit_buffer >>= self.code_size;
+        self.bits -= self.code_size;
+        Some(code as u16)
+    }
+
+    fn max_code(&self) -> Code {
+        self.code_mask
+    }
+
+    fn code_size(&self) -> u8 {
+        self.code_size
     }
 }
 

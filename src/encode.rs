@@ -27,7 +27,7 @@ trait Stateful {
     fn mark_ended(&mut self) -> bool;
 }
 
-struct EncodeState {
+struct EncodeState<B: Buffer> {
     /// The configured minimal code size.
     min_size: u8,
     /// The current encoding symbol tree.
@@ -38,12 +38,46 @@ struct EncodeState {
     current_code: Code,
     /// The clear code for resetting the dictionary.
     clear_code: Code,
+    /// The bit buffer for encoding.
+    buffer: B,
+}
+
+struct MsbBuffer {
     /// The current code length.
     code_size: u8,
     /// The buffer bits.
     buffer: u64,
     /// The number of valid buffer bits.
     bits_in_buffer: u8,
+}
+
+struct LsbBuffer {
+    /// The current code length.
+    code_size: u8,
+    /// The buffer bits.
+    buffer: u64,
+    /// The number of valid buffer bits.
+    bits_in_buffer: u8,
+}
+
+trait Buffer {
+    fn new(size: u8) -> Self;
+    /// Reset the code size in the buffer.
+    fn reset(&mut self, min_size: u8);
+    /// Insert a code into the buffer.
+    fn buffer_code(&mut self, code: Code);
+    /// Push bytes if the buffer space is getting small.
+    fn push_out(&mut self, out: &mut &mut [u8]) -> bool;
+    /// Flush all full bytes, returning if at least one more byte remains.
+    fn flush_out(&mut self, out: &mut &mut [u8]) -> bool;
+    /// Pad the buffer to a full byte.
+    fn buffer_pad(&mut self);
+    /// Increase the maximum code size.
+    fn bump_code_size(&mut self);
+    /// Return the maximum code with the current code size.
+    fn max_code(&self) -> Code;
+    /// Return the current code size in bits.
+    fn code_size(&self) -> u8;
 }
 
 /// One tree node for at most each code.
@@ -82,13 +116,14 @@ struct Full {
 
 impl Encoder {
     pub fn new(order: BitOrder, size: u8) -> Self {
-        match order {
-            BitOrder::Lsb => todo!("Not yet implemented"),
-            BitOrder::Msb => {},
-        }
+        type Boxed = Box<dyn Stateful + Send + 'static>;
+        let state = match order {
+            BitOrder::Lsb => Box::new(EncodeState::<LsbBuffer>::new(size)) as Boxed,
+            BitOrder::Msb => Box::new(EncodeState::<MsbBuffer>::new(size)) as Boxed,
+        };
 
         Encoder {
-            state: Box::new(EncodeState::new(size)),
+            state,
         }
     }
 
@@ -202,7 +237,7 @@ impl<W: Write> IntoStream<'_, W> {
     }
 }
 
-impl EncodeState {
+impl<B: Buffer> EncodeState<B> {
     fn new(min_size: u8) -> Self {
         let clear_code = 1 << min_size;
         let mut tree = Tree::default();
@@ -213,16 +248,14 @@ impl EncodeState {
             has_ended: false,
             current_code: clear_code,
             clear_code,
-            code_size: min_size + 1,
-            buffer: 0,
-            bits_in_buffer: 0,
+            buffer: B::new(min_size),
         };
         state.buffer_code(clear_code);
         state
     }
 }
 
-impl Stateful for EncodeState {
+impl<B: Buffer> Stateful for EncodeState<B> {
     fn advance(&mut self, mut inp: &[u8], mut out: &mut [u8]) -> StreamResult {
         let c_in = inp.len();
         let c_out = out.len();
@@ -241,8 +274,10 @@ impl Stateful for EncodeState {
                         // When reading this code, the decoder will add an extra entry to its table
                         // before reading th end code. Thusly, it may increase its code size based
                         // on this additional entry.
-                        if self.tree.keys.len() + 1 > (1 << self.code_size) && self.code_size < MAX_CODESIZE {
-                            self.code_size += 1;
+                        if self.tree.keys.len() + 1 > usize::from(self.buffer.max_code()) + 1
+                            && self.buffer.code_size() < MAX_CODESIZE
+                        {
+                            self.buffer.bump_code_size();
                         }
                     }
                     self.buffer_code(end);
@@ -274,14 +309,16 @@ impl Stateful for EncodeState {
                 Some(code) => {
                     self.buffer_code(code);
 
-                    if self.tree.keys.len() > (1 << self.code_size) && self.code_size < MAX_CODESIZE {
-                        self.code_size += 1;
+                    if self.tree.keys.len() > usize::from(self.buffer.max_code()) + 1
+                        && self.buffer.code_size() < MAX_CODESIZE
+                    {
+                        self.buffer.bump_code_size();
                     }
 
                     if self.tree.keys.len() > MAX_ENTRIES {
                         self.buffer_code(self.clear_code);
                         self.tree.reset(self.min_size);
-                        self.code_size = self.min_size + 1;
+                        self.buffer.reset(self.min_size);
                     }
                 }
             }
@@ -306,7 +343,47 @@ impl Stateful for EncodeState {
     }
 }
 
-impl EncodeState {
+impl<B: Buffer> EncodeState<B> {
+    fn push_out(&mut self, out: &mut &mut [u8]) -> bool {
+        self.buffer.push_out(out)
+    }
+
+    fn flush_out(&mut self, out: &mut &mut [u8]) -> bool {
+        self.buffer.flush_out(out)
+    }
+
+    fn end_code(&self) -> Code {
+        self.clear_code + 1
+    }
+
+    fn buffer_pad(&mut self) {
+        self.buffer.buffer_pad();
+    }
+
+    fn buffer_code(&mut self, code: Code) {
+        self.buffer.buffer_code(code);
+    }
+}
+
+impl Buffer for MsbBuffer {
+    fn new(min_size: u8) -> Self {
+        MsbBuffer {
+            code_size: min_size + 1,
+            buffer: 0,
+            bits_in_buffer: 0,
+        }
+    }
+
+    fn reset(&mut self, min_size: u8) {
+        self.code_size = min_size + 1;
+    }
+
+    fn buffer_code(&mut self, code: Code) {
+        let shift = 64 - self.bits_in_buffer - self.code_size;
+        self.buffer |= u64::from(code) << shift;
+        self.bits_in_buffer += self.code_size;
+    }
+
     fn push_out(&mut self, out: &mut &mut [u8]) -> bool {
         if self.bits_in_buffer + 2*self.code_size < 64 {
             return false;
@@ -330,8 +407,63 @@ impl EncodeState {
         count < want
     }
 
-    fn end_code(&self) -> Code {
-        self.clear_code + 1
+    fn buffer_pad(&mut self) {
+        let to_byte = self.bits_in_buffer.wrapping_neg() & 0x7;
+        self.bits_in_buffer += to_byte;
+    }
+
+    fn bump_code_size(&mut self) {
+        self.code_size += 1;
+    }
+
+    fn max_code(&self) -> Code {
+        (1 << self.code_size) - 1
+    }
+
+    fn code_size(&self) -> u8 {
+        self.code_size
+    }
+}
+
+impl Buffer for LsbBuffer {
+    fn new(min_size: u8) -> Self {
+        LsbBuffer {
+            code_size: min_size + 1,
+            buffer: 0,
+            bits_in_buffer: 0,
+        }
+    }
+
+    fn reset(&mut self, min_size: u8) {
+        self.code_size = min_size + 1;
+    }
+
+    fn buffer_code(&mut self, code: Code) {
+        self.buffer |= u64::from(code) << self.bits_in_buffer;
+        self.bits_in_buffer += self.code_size;
+    }
+
+    fn push_out(&mut self, out: &mut &mut [u8]) -> bool {
+        if self.bits_in_buffer + 2*self.code_size < 64 {
+            return false;
+        }
+
+        self.flush_out(out)
+    }
+
+    fn flush_out(&mut self, out: &mut &mut [u8]) -> bool {
+        let want = usize::from(self.bits_in_buffer/8);
+        let count = want.min((*out).len());
+        let (bytes, tail) = core::mem::replace(out, &mut []).split_at_mut(count);
+        *out = tail;
+
+        for b in bytes {
+            *b = (self.buffer & 0x0000_0000_0000_00ff) as u8;
+            self.buffer >>= 8;
+            self.bits_in_buffer -= 8;
+        }
+
+        count < want
     }
 
     fn buffer_pad(&mut self) {
@@ -339,10 +471,16 @@ impl EncodeState {
         self.bits_in_buffer += to_byte;
     }
 
-    fn buffer_code(&mut self, code: Code) {
-        let shift = 64 - self.bits_in_buffer - self.code_size;
-        self.buffer |= u64::from(code) << shift;
-        self.bits_in_buffer += self.code_size;
+    fn bump_code_size(&mut self) {
+        self.code_size += 1;
+    }
+
+    fn max_code(&self) -> Code {
+        (1 << self.code_size) - 1
+    }
+
+    fn code_size(&self) -> u8 {
+        self.code_size
     }
 }
 
