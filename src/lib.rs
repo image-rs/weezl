@@ -1,9 +1,9 @@
 //! # LZW decoder and encoder
 //!
-//! This crates provides a `LzwEncoder` and `LzwDecoder`. The code words are written from
-//! and to bit streams where it is possible to write either the most or least significant 
-//! bit first. The maximum possible code size is 16 bits. Both types rely on RAII to
-//! produced correct results.
+//! This crates provides an `Encoder` and a `Decoder` in their respective modules. The code words
+//! are written from and to bit byte slices (or streams) where it is possible to write either the
+//! most or least significant bits first. The maximum possible code size is 12 bits, the smallest
+//! available code size is 2 bits.
 //!
 //! The de- and encoder expect the LZW stream to start with a clear code and end with an
 //! end code which are defined as follows:
@@ -11,7 +11,13 @@
 //!  * `CLEAR_CODE == 1 << min_code_size`
 //!  * `END_CODE   == CLEAR_CODE + 1`
 //!
-//! Examplary use of the encoder:
+//! For optimal performance, all buffers and input and output slices should be as large as possible
+//! and at least 2048 bytes long. This extends to input streams which should have similarly sized
+//! buffers. This library uses Rust's standard allocation interfaces (`Box` and `Vec` to be
+//! precise). Since there are no ways to handle allocation errors it is not recommended to operate
+//! it on 16-bit targets.
+//!
+//! Exemplary use of the encoder:
 //!
 //! ```
 //! use weezl::{BitOrder, encode::Encoder};
@@ -23,6 +29,10 @@
 //! let result = enc.into_stream(&mut compressed).encode(&data[..]);
 //! result.status.unwrap();
 //! ```
+//!
+//! The main algorithm can be used in `no_std` as well, although it requires an allocator. This
+//! restriction might be lifted at a later stage. For this you should deactivate the `std` feature.
+//! The main interfaces stay intact but the `into_stream` combinator is no available.
 #![cfg_attr(not(feature = "std"), no_std)]
 
 #[cfg(all(feature = "alloc", not(feature = "std")))]
