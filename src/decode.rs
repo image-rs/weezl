@@ -272,6 +272,14 @@ impl<C: CodeBuffer> Stateful for DecodeState<C> {
     }
 
     fn advance(&mut self, mut inp: &[u8], mut out: &mut [u8]) -> StreamResult {
+        if self.has_ended {
+            return StreamResult {
+                consumed_in: 0,
+                consumed_out: 0,
+                status: Ok(LzwStatus::Done),
+            };
+        }
+
         let o_in = inp.len();
         let o_out = out.len();
 
@@ -407,6 +415,7 @@ impl<C: CodeBuffer> Stateful for DecodeState<C> {
             }
 
             if new_code == self.end_code {
+                self.has_ended = true;
                 status = Ok(LzwStatus::Done);
                 last_decoded = None;
                 break;
