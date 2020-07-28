@@ -11,6 +11,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.3"
+lzw = { package = "weezl", version = "0.0.1" }
 
 [dependencies.weezl]
 path = ".."
