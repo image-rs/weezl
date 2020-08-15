@@ -447,6 +447,7 @@ impl<C: CodeBuffer> Stateful for DecodeState<C> {
 
                     cha = self.buffer.reconstruct_high();
                 } else {
+                    last_decoded = None;
                     cha = self.buffer.reconstruct_low(&self.table, new_code);
                 }
             } else {
