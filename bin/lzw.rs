@@ -6,12 +6,16 @@ use weezl::{encode as enlzw, decode as delzw, BitOrder};
 
 fn main() {
     let args = env::args_os().skip(1);
-    let flags = Flags::from_args(args);
+    let flags = Flags::from_args(args).unwrap_or_else(|ParamError| explain());
 
     let out = io::stdout();
     let out = out.lock();
 
-    let input = flags.file.unwrap_or_else(explain);
+    let mut files = flags.files;
+    let input = files.pop().unwrap_or_else(explain);
+    if !files.is_empty() {
+        return explain();
+    }
     let operation = flags.operation.unwrap_or_else(explain);
     let min_code = if flags.min_code < 2 || flags.min_code > 12 {
         return explain();
@@ -49,11 +53,13 @@ fn main() {
 }
 
 struct Flags {
-    file: Option<Input>,
+    files: Vec<Input>,
     operation: Option<Operation>,
     min_code: u8,
     bit_order: BitOrder,
 }
+
+struct ParamError;
 
 enum Input {
     File(PathBuf),
@@ -77,7 +83,7 @@ fn explain<T>() -> T {
 impl Default for Flags {
     fn default() -> Flags {
         Flags {
-            file: None,
+            files: vec![],
             operation: None,
             min_code: 8,
             bit_order: BitOrder::Msb,
@@ -86,29 +92,65 @@ impl Default for Flags {
 }
 
 impl Flags {
-    fn from_args(mut args: impl Iterator<Item=ffi::OsString>) -> Self {
+    fn from_args(mut args: impl Iterator<Item=ffi::OsString>) -> Result<Self, ParamError> {
         let mut flags = Flags::default();
-        let (input, operation) = match args.next().as_ref().and_then(|s| s.to_str()) {
-            Some("-") => (Input::Stdin, Operation::Encode),
-            Some("-d") => {
-                match args.next().as_ref() {
-                    Some(arg) if arg.to_str() == Some("-") => (Input::Stdin, Operation::Decode),
-                    Some(file) => (Input::File(file.into()), Operation::Decode),
-                    None => explain(),
-                }
-            },
-            Some("-e") => {
-                match args.next().as_ref() {
-                    Some(arg) if arg.to_str() == Some("-") => (Input::Stdin, Operation::Encode),
-                    Some(file) => (Input::File(file.into()), Operation::Encode),
-                    None => explain(),
-                }
-            },
-            Some(file) => (Input::File(file.into()), Operation::Encode),
-            None => explain(),
-        };
-        flags.file = Some(input);
-        flags.operation = Some(operation);
-        flags
+        let mut operation = None;
+        loop {
+            match args.next().as_ref().and_then(|s| s.to_str()) {
+                Some("-d") | Some("--decode") => {
+                    if operation.is_some() {
+                        return Err(ParamError);
+                    }
+                    operation = Some(Operation::Decode);
+                },
+                Some("-e") | Some("--encode") => {
+                    if operation.is_some() {
+                        return Err(ParamError);
+                    }
+                    operation = Some(Operation::Encode);
+                },
+                Some("-w") | Some("--word-bits") => {
+                    match args.next() {
+                        None => return Err(ParamError),
+                        Some(bits) => {
+                            let st = bits.to_str().ok_or(ParamError)?;
+                            flags.min_code = st.parse().ok().ok_or(ParamError)?;
+                        }
+                    }
+                },
+                Some("-le") | Some("--little-endian") => {
+                    flags.bit_order = BitOrder::Lsb;
+                },
+                Some("-be") | Some("--big-endian") | Some("-ne") | Some("--network-endian") => {
+                    flags.bit_order = BitOrder::Msb;
+                },
+                Some("-") => {
+                    flags.files.push(Input::Stdin);
+                },
+                Some(other) if other.starts_with('-') => {
+                    // Reserved for future use.
+                    // -a: self-describing archive format, similar to actual compress
+                    // -b: maximum bits
+                    // -v: verbosity
+                    // some compress compatibility mode? Probably through arg(0) though.
+                    return Err(ParamError);
+                },
+                Some(file) => {
+                    flags.files.push(Input::File(file.into()));
+                },
+                None => break,
+            };
+        }
+
+        flags.files.extend(args.map(|file| {
+            if let Some("-") = file.to_str() {
+                Input::Stdin
+            } else {
+                Input::File(file.into())
+            }
+        }));
+
+        flags.operation = operation;
+        Ok(flags)
     }
 }
