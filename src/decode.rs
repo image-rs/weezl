@@ -22,6 +22,10 @@ pub struct IntoStream<'d, W> {
 trait Stateful {
     fn advance(&mut self, inp: &[u8], out: &mut [u8]) -> StreamResult;
     fn has_ended(&self) -> bool;
+    /// Ignore an end code and continue decoding (no implied reset).
+    fn restart(&mut self);
+    /// Reset the decoder to the beginning, dropping all buffers etc.
+    fn reset(&mut self);
 }
 
 #[derive(Clone)]
@@ -160,6 +164,23 @@ impl Decoder {
     pub fn has_ended(&self) -> bool {
         self.state.has_ended()
     }
+
+    /// Ignore an encode code (if there was one) and continue.
+    ///
+    /// This will _not_ reset any of the inner code tables and not have the effect of a clear code.
+    /// It will instead continue as if the end code had not been present.
+    pub fn restart(&mut self) {
+        self.state.restart();
+    }
+
+    /// Reset all internal state.
+    ///
+    /// This produce a decoder as if just constructed with `new` but taking slightly less work. In
+    /// particular it will not deallocate any internal allocations. It will also avoid some
+    /// duplicate setup work.
+    pub fn reset(&mut self) {
+        self.state.reset();
+    }
 }
 
 #[cfg(feature = "std")]
@@ -269,6 +290,19 @@ impl<C: CodeBuffer> DecodeState<C> {
 impl<C: CodeBuffer> Stateful for DecodeState<C> {
     fn has_ended(&self) -> bool {
         self.has_ended
+    }
+
+    fn restart(&mut self) {
+        self.has_ended = false;
+    }
+
+    fn reset(&mut self) {
+        self.table.init(self.min_size);
+        self.buffer.read_mark = 0;
+        self.buffer.write_mark = 0;
+        self.last = None;
+        self.restart();
+        self.code_buffer = CodeBuffer::new(self.min_size);
     }
 
     fn advance(&mut self, mut inp: &[u8], mut out: &mut [u8]) -> StreamResult {
