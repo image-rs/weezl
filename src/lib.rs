@@ -51,7 +51,6 @@ pub enum BitOrder {
     /// The most significant bit is processed first.
     Msb,
     /// The least significant bit is processed first.
-    /// TODO: Not yet implemented everywhere.
     Lsb,
 }
 
