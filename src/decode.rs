@@ -836,7 +836,7 @@ impl Buffer {
         self.write_mark = 0;
         self.read_mark = 0;
         let depth = table.depths[usize::from(code)];
-        let mut memory = core::mem::take(&mut self.bytes);
+        let mut memory = core::mem::replace(&mut self.bytes, Box::default());
 
         let out = &mut memory[..usize::from(depth)];
         let last = self.reconstruct_direct(table, code, out);
