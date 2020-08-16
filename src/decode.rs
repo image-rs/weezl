@@ -22,6 +22,10 @@ pub struct IntoStream<'d, W> {
 trait Stateful {
     fn advance(&mut self, inp: &[u8], out: &mut [u8]) -> StreamResult;
     fn has_ended(&self) -> bool;
+    /// Ignore an end code and continue decoding (no implied reset).
+    fn restart(&mut self);
+    /// Reset the decoder to the beginning, dropping all buffers etc.
+    fn reset(&mut self);
 }
 
 #[derive(Clone)]
@@ -160,6 +164,23 @@ impl Decoder {
     pub fn has_ended(&self) -> bool {
         self.state.has_ended()
     }
+
+    /// Ignore an encode code (if there was one) and continue.
+    ///
+    /// This will _not_ reset any of the inner code tables and not have the effect of a clear code.
+    /// It will instead continue as if the end code had not been present.
+    pub fn restart(&mut self) {
+        self.state.restart();
+    }
+
+    /// Reset all internal state.
+    ///
+    /// This produce a decoder as if just constructed with `new` but taking slightly less work. In
+    /// particular it will not deallocate any internal allocations. It will also avoid some
+    /// duplicate setup work.
+    pub fn reset(&mut self) {
+        self.state.reset();
+    }
 }
 
 #[cfg(feature = "std")]
@@ -176,7 +197,7 @@ impl<W: Write> IntoStream<'_, W> {
         self.decode_part(read, true)
     }
 
-    fn decode_part(&mut self, mut read: impl BufRead, finish: bool) -> AllResult {
+    fn decode_part(&mut self, mut read: impl BufRead, must_finish: bool) -> AllResult {
         let IntoStream { decoder, writer } = self;
         enum Progress {
             Ok,
@@ -186,29 +207,34 @@ impl<W: Write> IntoStream<'_, W> {
         let mut bytes_read = 0;
         let mut bytes_written = 0;
 
+        // Converting to mutable refs to move into the `once` closure.
         let read_bytes = &mut bytes_read;
         let write_bytes = &mut bytes_written;
 
+        // A 64 MB buffer is quite large but should get alloc_zeroed.
+        // Note that the decoded size can be up to quadratic in code block.
         let mut outbuf = vec![0; 1 << 26];
         let once = move || {
+            // Try to grab one buffer of input data.
             let data = read.fill_buf()?;
 
+            // Decode as much of the buffer as fits.
             let result = decoder.decode_bytes(data, &mut outbuf[..]);
+            // Do the bookkeeping and consume the buffer.
             *read_bytes += result.consumed_in;
             *write_bytes += result.consumed_out;
             read.consume(result.consumed_in);
 
+            // Handle the status in the result.
             let done = result.status.map_err(|err| io::Error::new(
                     io::ErrorKind::InvalidData, &*format!("{:?}", err)
                 ))?;
 
-            if let LzwStatus::Done = done {
-                writer.write_all(&outbuf[..result.consumed_out])?;
-                return Ok(Progress::Done);
-            }
-
+            // Check if we had any new data at all.
             if let LzwStatus::NoProgress = done {
-                if finish {
+                debug_assert_eq!(result.consumed_out, 0, "No progress means we have not decoded any data");
+                // In particular we did not finish decoding.
+                if must_finish {
                     return Err(io::Error::new(
                             io::ErrorKind::UnexpectedEof, "No more data but no end marker detected"
                         ));
@@ -217,10 +243,20 @@ impl<W: Write> IntoStream<'_, W> {
                 }
             }
 
+            // And finish by writing our result.
+            // TODO: we may lose data on error (also on status error above) which we might want to
+            // deterministically handle so that we don't need to restart everything from scratch as
+            // the only recovery strategy. Any changes welcome.
             writer.write_all(&outbuf[..result.consumed_out])?;
-            Ok(Progress::Ok)
+
+            Ok(if let LzwStatus::Done = done {
+                Progress::Done
+            } else {
+                Progress::Ok
+            })
         };
 
+        // Decode chunks of input data until we're done.
         let status = core::iter::repeat_with(once)
             // scan+fuse can be replaced with map_while
             .scan((), |(), result| match result {
@@ -230,6 +266,7 @@ impl<W: Write> IntoStream<'_, W> {
             })
             .fuse()
             .collect();
+
         AllResult {
             bytes_read,
             bytes_written,
@@ -271,7 +308,21 @@ impl<C: CodeBuffer> Stateful for DecodeState<C> {
         self.has_ended
     }
 
+    fn restart(&mut self) {
+        self.has_ended = false;
+    }
+
+    fn reset(&mut self) {
+        self.table.init(self.min_size);
+        self.buffer.read_mark = 0;
+        self.buffer.write_mark = 0;
+        self.last = None;
+        self.restart();
+        self.code_buffer = CodeBuffer::new(self.min_size);
+    }
+
     fn advance(&mut self, mut inp: &[u8], mut out: &mut [u8]) -> StreamResult {
+        // Skip everything if there is nothing to do.
         if self.has_ended {
             return StreamResult {
                 consumed_in: 0,
@@ -280,19 +331,66 @@ impl<C: CodeBuffer> Stateful for DecodeState<C> {
             };
         }
 
+        // Rough description:
+        // We will fill the output slice as much as possible until either there is no more symbols
+        // to decode or an end code has been reached. This requires an internal buffer to hold a
+        // potential tail of the word corresponding to the last symbol. This tail will then be
+        // decoded first before continuing with the regular decoding. The same buffer is required
+        // to persist some symbol state across calls.
+        //
+        // We store the words corresponding to code symbols in an index chain, bytewise, where we
+        // push each decoded symbol. (TODO: wuffs shows some success with 8-byte units). This chain
+        // is traversed for each symbol when it is decoded and bytes are placed directly into the
+        // output slice. In the special case (new_code == next_code) we use an existing decoded
+        // version that is present in either the out bytes of this call or in buffer to copy the
+        // repeated prefix slice.
+        // TODO: I played with a 'decoding cache' to remember the position of long symbols and
+        // avoid traversing the chain, doing a copy of memory instead. It did however not lead to
+        // a serious improvement. It's just unlikely to both have a long symbol and have that
+        // repeated twice in the same output buffer.
+        //
+        // You will also find the (to my knowledge novel) concept of a _decoding burst_ which
+        // gained some >~10% speedup in tests. This is motivated by wanting to use out-of-order
+        // execution as much as possible and for this reason have the least possible stress on
+        // branch prediction. Our decoding table already gives us a lookahead on symbol lengths but
+        // only for re-used codes, not novel ones. This lookahead also makes the loop termination
+        // when restoring each byte of the code word perfectly predictable! So a burst is a chunk
+        // of code words which are all independent of each other, have known lengths _and_ are
+        // guaranteed to fit into the out slice without requiring a buffer. One burst can be
+        // decoded in an extremely tight loop.
+        //
+        // TODO: since words can be at most (1 << MAX_CODESIZE) = 4096 bytes long we could avoid
+        // that intermediate buffer at the expense of not always filling the output buffer
+        // completely. Alternatively we might follow its chain of precursor states twice. This may
+        // be even cheaper if we store more than one byte per link so it really should be
+        // evaluated.
+        // TODO: if the caller was required to provide the previous last word we could also avoid
+        // the buffer for cases where we need it to restore the next code! This could be built
+        // backwards compatible by only doing it after an opt-in call that enables the behaviour.
+
+        // Record initial lengths for the result that is returned.
         let o_in = inp.len();
         let o_out = out.len();
 
+        // The code_link is the previously decoded symbol.
+        // It's used to link the new code back to its predecessor.
         let mut code_link = None;
+        // The status, which is written to on an invalid code.
         let mut status = Ok(LzwStatus::Ok);
 
         match self.last.take() {
             // No last state? This is the first code after a reset?
             None => {
                 match self.next_symbol(&mut inp) {
+                    // Plainly invalid code.
                     Some(code) if code > self.next_code => status = Err(LzwError::InvalidCode),
+                    // next_code would require an actual predecessor.
                     Some(code) if code == self.next_code => status = Err(LzwError::InvalidCode),
+                    // No more symbols available and nothing decoded yet.
+                    // Assume that we didn't make progress, this may get reset to Done if we read
+                    // some bytes from the input.
                     None => status = Ok(LzwStatus::NoProgress),
+                    // Handle a valid code.
                     Some(init_code) => {
                         if init_code == self.clear_code {
                             self.init_tables();
@@ -300,8 +398,11 @@ impl<C: CodeBuffer> Stateful for DecodeState<C> {
                             self.has_ended = true;
                             status = Ok(LzwStatus::Done);
                         } else if self.table.is_empty() {
+                            // We require an explicit reset.
+                            // TODO: allow this to be configured and do the setup implicitly.
                             status = Err(LzwError::InvalidCode);
                         } else {
+                            // Reconstruct the first code in the buffer.
                             self.buffer.reconstruct_low(&self.table, init_code);
                             let link = self.table.at(init_code).clone();
                             code_link = Some((init_code, link));
@@ -309,13 +410,17 @@ impl<C: CodeBuffer> Stateful for DecodeState<C> {
                     }
                 }
             }
+            // Move the tracking state to the stack.
             Some(tup) => code_link = Some(tup),
         };
 
+        // Track an empty `burst` (see below) means we made no progress.
         let mut burst_required_for_progress = false;
+        // Restore the previous state, if any.
         if let Some((code, link)) = code_link.take() {
             code_link = Some((code, link));
             let remain = self.buffer.buffer();
+            // Check if we can fully finish the buffer.
             if remain.len() > out.len() {
                 if out.is_empty() {
                     status = Ok(LzwStatus::NoProgress);
@@ -336,9 +441,16 @@ impl<C: CodeBuffer> Stateful for DecodeState<C> {
             }
         }
 
+        // The tracking state for a burst.
+        // These are actually initialized later but compiler wasn't smart enough to fully optimize
+        // out the init code so that appears outside th loop.
+        // TODO: maybe we can make it part of the state but it's dubious if that really gives a
+        // benefit over stack usage? Also the slices stored here would need some treatment as we
+        // can't infect the main struct with a lifetime.
         let mut burst = [0; 6];
         let mut bytes = [0u16; 6];
         let mut target: [&mut [u8]; 6] = Default::default();
+        // A special reference to out slice which holds the last decoded symbol.
         let mut last_decoded: Option<&[u8]> = None;
 
         while let Some((mut code, mut link)) = code_link.take() {
@@ -348,18 +460,22 @@ impl<C: CodeBuffer> Stateful for DecodeState<C> {
             }
 
             let mut burst_size = 0;
-
+            // Ensure the code buffer is full, we're about to request some codes.
+            // Note that this also ensures at least one code is in the buffer if any input is left.
             self.refill_bits(&mut inp);
             // A burst is a sequence of decodes that are completely independent of each other. This
             // is the case if neither is an end code, a clear code, or a next code, i.e. we have
             // all of them in the decoding table and thus known their depths, and additionally if
             // we can decode them directly into the output buffer.
             for b in &mut burst {
+                // TODO: does it actually make a perf difference to avoid reading new bits here?
                 *b = match self.get_bits() {
                     None => break,
                     Some(code) => code,
                 };
 
+                // We can commit the previous burst code, and will take a slice from the output
+                // buffer. This also avoids the bounds check in the tight loop later.
                 if burst_size > 0 {
                     let len = bytes[burst_size-1];
                     let (into, tail) = out.split_at_mut(usize::from(len));
@@ -367,16 +483,19 @@ impl<C: CodeBuffer> Stateful for DecodeState<C> {
                     out = tail;
                 }
 
+                // Check that we don't overflow the code size with all codes we burst decode.
                 let potential_code = self.next_code + burst_size as u16;
                 burst_size += 1;
                 if potential_code == self.code_buffer.max_code() {
                     break;
                 }
 
+                // A burst code can't be special.
                 if *b == self.clear_code || *b == self.end_code || *b >= self.next_code {
                     break;
                 }
 
+                // Read the code length and check that we can decode directly into the out slice.
                 let len = self.table.depths[usize::from(*b)];
                 if out.len() < usize::from(len) {
                     break;
@@ -385,6 +504,7 @@ impl<C: CodeBuffer> Stateful for DecodeState<C> {
                 bytes[burst_size-1] = len;
             }
 
+            // No code left, and no more bytes to fill the buffer.
             if burst_size == 0 {
                 if burst_required_for_progress {
                     status = Ok(LzwStatus::NoProgress);
@@ -394,20 +514,30 @@ impl<C: CodeBuffer> Stateful for DecodeState<C> {
             }
 
             burst_required_for_progress = false;
+            // Note that the very last code in the burst buffer doesn't actually belong to the
+            // burst itself. TODO: sometimes it could, we just don't differentiate between the
+            // breaks and a loop end condition above. That may be a speed advantage?
             let (&new_code, burst) = burst[..burst_size].split_last().unwrap();
+
+            // The very tight loop for restoring the actual burst.
             for (&burst, target) in burst.iter().zip(&mut target[..burst_size-1]) {
                 let cha = self.buffer.reconstruct_direct(&self.table, burst, target);
+                // TODO: this pushes into a Vec, maybe we can make this cleaner.
+                // Theoretically this has a branch and llvm tends to be flaky with code layout for
+                // the case of requiring an allocation (which can't occur in practice).
                 let new_link = self.table.derive(&link, cha, code);
                 self.next_code += 1;
                 code = burst;
                 link = new_link;
             }
 
+            // Update the slice holding the last decoded word.
             if let Some(new_last) = target[..burst_size-1].last_mut() {
                 let slice = core::mem::replace(new_last, &mut []);
                 last_decoded = Some(&*slice);
             }
 
+            // Now handle the special codes.
             if new_code == self.clear_code {
                 self.reset_tables();
                 last_decoded = None;
@@ -433,12 +563,14 @@ impl<C: CodeBuffer> Stateful for DecodeState<C> {
                 self.table.depths[usize::from(new_code)]
             };
 
-            // Ohh, we will need to store our current state into the buffer.
             let cha;
             let is_in_buffer;
+            // Check if we will need to store our current state into the buffer.
             if usize::from(required_len) > out.len() {
                 is_in_buffer = true;
                 if new_code == self.next_code {
+                    // last_decoded will be Some if we have restored any code into the out slice.
+                    // Otherwise it will still be present in the buffer.
                     if let Some(last) = last_decoded.take() {
                         self.buffer.bytes[..last.len()].copy_from_slice(last);
                         self.buffer.write_mark = last.len();
@@ -447,6 +579,8 @@ impl<C: CodeBuffer> Stateful for DecodeState<C> {
 
                     cha = self.buffer.reconstruct_high();
                 } else {
+                    // Restore the decoded word into the buffer.
+                    last_decoded = None;
                     cha = self.buffer.reconstruct_low(&self.table, new_code);
                 }
             } else {
@@ -467,6 +601,7 @@ impl<C: CodeBuffer> Stateful for DecodeState<C> {
                     cha = self.buffer.reconstruct_direct(&self.table, new_code, target);
                 }
 
+                // A new decoded word.
                 last_decoded = Some(target);
             }
 
@@ -483,22 +618,30 @@ impl<C: CodeBuffer> Stateful for DecodeState<C> {
                 self.next_code += 1;
                 new_link = link;
             } else {
+                // It's actually quite likely that the next code will be a reset but just in case.
+                // FIXME: this path hasn't been tested very well.
                 new_link = link.clone();
             }
 
+            // store the information on the decoded word.
             code_link = Some((new_code, new_link));
 
+            // Can't make any more progress with decoding.
             if is_in_buffer {
                 break;
             }
         }
 
+        // We need to store the last word into the buffer in case the first code in the next
+        // iteration is the next_code.
         if let Some(tail) = last_decoded {
             self.buffer.bytes[..tail.len()].copy_from_slice(tail);
             self.buffer.write_mark = tail.len();
             self.buffer.read_mark = tail.len();
         }
 
+        // Ensure we don't indicate that no progress was made if we read some bytes from the input
+        // (which is progress).
         if o_in > inp.len() {
             if let Ok(LzwStatus::NoProgress) = status {
                 status = Ok(LzwStatus::Ok);
