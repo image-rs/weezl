@@ -34,6 +34,7 @@
 //! restriction might be lifted at a later stage. For this you should deactivate the `std` feature.
 //! The main interfaces stay intact but the `into_stream` combinator is no available.
 #![cfg_attr(not(feature = "std"), no_std)]
+#![forbid(unsafe_code)]
 
 #[cfg(all(feature = "alloc", not(feature = "std")))]
 extern crate alloc;
