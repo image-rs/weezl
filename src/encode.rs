@@ -1,14 +1,22 @@
 //! A module for all encoding needs.
 use crate::{MAX_CODESIZE, MAX_ENTRIES, BitOrder, Code};
-use crate::decode::{LzwStatus, StreamResult};
+use crate::decode::{LzwError, LzwStatus, BufferResult};
 
 use crate::alloc::{boxed::Box, vec::Vec};
 #[cfg(feature = "std")]
 use std::io::{self, BufRead, Write};
 #[cfg(feature = "std")]
-use crate::decode::AllResult;
+use crate::decode::StreamResult;
 
+/// The state for encoding data with an LZW algorithm.
+///
+/// The same structure can be utilized with streams as well as your own buffers and driver logic.
+/// It may even be possible to mix them if you are sufficiently careful not to lose any written
+/// data in the process.
 pub struct Encoder {
+    /// Internally dispatch via a dynamic trait object. This did not have any significant
+    /// performance impact as we batch data internally and this pointer does not change after
+    /// creation!
     state: Box<dyn Stateful + Send + 'static>,
 }
 
@@ -23,7 +31,7 @@ pub struct IntoStream<'d, W> {
 }
 
 trait Stateful {
-    fn advance(&mut self, inp: &[u8], out: &mut [u8]) -> StreamResult;
+    fn advance(&mut self, inp: &[u8], out: &mut [u8]) -> BufferResult;
     fn mark_ended(&mut self) -> bool;
 }
 
@@ -115,6 +123,11 @@ struct Full {
 }
 
 impl Encoder {
+    /// Create a new encoder with the specified bit order and symbol size.
+    ///
+    /// The algorithm for dynamically increasing the code symbol bit width is compatible with the
+    /// original specification. In particular you will need to specify an `Lsb` bit oder to encode
+    /// the data portion of a compressed `gif` image.
     pub fn new(order: BitOrder, size: u8) -> Self {
         type Boxed = Box<dyn Stateful + Send + 'static>;
         let state = match order {
@@ -132,9 +145,14 @@ impl Encoder {
     /// See [`into_stream`] for high-level functions (this interface is only available with the
     /// `std` feature) and [`finish`] for marking the input data as complete.
     ///
+    /// When some input byte is invalid, i.e. is not smaller than `1 << size`, then that byte and
+    /// all following ones will _not_ be consumed and the `status` of the result will signal an
+    /// error. The result will also indicate that all bytes up to but not including the offending
+    /// byte have been consumed. You may try again with a fixed byte.
+    ///
     /// [`into_stream`]: #method.into_stream
     /// [`finish`]: #method.finish
-    pub fn encode_bytes(&mut self, inp: &[u8], out: &mut [u8]) -> StreamResult {
+    pub fn encode_bytes(&mut self, inp: &[u8], out: &mut [u8]) -> BufferResult {
         self.state.advance(inp, out)
     }
 
@@ -161,16 +179,16 @@ impl<W: Write> IntoStream<'_, W> {
     ///
     /// This will drain the supplied reader. It will not encode an end marker after all data has
     /// been processed.
-    pub fn encode(&mut self, read: impl BufRead) -> AllResult {
+    pub fn encode(&mut self, read: impl BufRead) -> StreamResult {
         self.encode_part(read, false)
     }
 
     /// Encode data from a reader and an end marker.
-    pub fn encode_all(mut self, read: impl BufRead) -> AllResult {
+    pub fn encode_all(mut self, read: impl BufRead) -> StreamResult {
         self.encode_part(read, true)
     }
 
-    fn encode_part(&mut self, mut read: impl BufRead, finish: bool) -> AllResult {
+    fn encode_part(&mut self, mut read: impl BufRead, finish: bool) -> StreamResult {
         let IntoStream { encoder, writer } = self;
         enum Progress {
             Ok,
@@ -229,7 +247,7 @@ impl<W: Write> IntoStream<'_, W> {
             .fuse()
             .collect();
 
-        AllResult {
+        StreamResult {
             bytes_read,
             bytes_written,
             status,
@@ -256,11 +274,12 @@ impl<B: Buffer> EncodeState<B> {
 }
 
 impl<B: Buffer> Stateful for EncodeState<B> {
-    fn advance(&mut self, mut inp: &[u8], mut out: &mut [u8]) -> StreamResult {
+    fn advance(&mut self, mut inp: &[u8], mut out: &mut [u8]) -> BufferResult {
         let c_in = inp.len();
         let c_out = out.len();
+        let mut status = Ok(LzwStatus::Ok);
 
-        loop {
+        'encoding: loop {
             if self.push_out(&mut out) {
                 break;
             }
@@ -291,6 +310,12 @@ impl<B: Buffer> Stateful for EncodeState<B> {
             let mut next_code = None;
             let mut bytes = inp.iter();
             while let Some(&byte) = bytes.next() {
+                if self.min_size < 8 && byte >= 1 << self.min_size {
+                    status = Err(LzwError::InvalidCode);
+                    break 'encoding;
+                }
+
+                inp = bytes.as_slice();
                 match self.tree.iterate(self.current_code, byte) {
                     Ok(code) => self.current_code = code,
                     Err(_) => {
@@ -302,7 +327,6 @@ impl<B: Buffer> Stateful for EncodeState<B> {
                 }
             }
 
-            inp = bytes.as_slice();
             match next_code {
                 // No more bytes, no code produced.
                 None => break,
@@ -324,14 +348,13 @@ impl<B: Buffer> Stateful for EncodeState<B> {
             }
         }
 
-        let mut status = Ok(LzwStatus::Ok);
-        if inp.is_empty() && self.current_code == self.clear_code + 1 {
+        if inp.is_empty() && self.current_code == self.end_code() {
             if !self.flush_out(&mut out) {
                 status = Ok(LzwStatus::Done);
             }
         }
 
-        StreamResult {
+        BufferResult {
             consumed_in: c_in - inp.len(),
             consumed_out: c_out - out.len(),
             status,
@@ -623,5 +646,52 @@ impl From<FullKey> for CompressedKey {
             FullKey::Simple(code) => 0x1000 | code,
             FullKey::Full(code) => code,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BitOrder, Encoder, LzwError, LzwStatus};
+    use crate::decode::Decoder;
+
+    #[test]
+    fn invalid_input_rejected() {
+        const BIT_LEN: u8 = 2;
+        let ref input = [0, 1 << BIT_LEN /* invalid */, 0];
+        let ref mut target = [0u8; 128];
+        let mut encoder = Encoder::new(BitOrder::Msb, BIT_LEN);
+
+        encoder.finish();
+        // We require simulation of normality, that is byte-for-byte compression.
+        let result = encoder.encode_bytes(input, target);
+        assert!(if let Err(LzwError::InvalidCode) = result.status { true } else { false });
+        assert_eq!(result.consumed_in, 1);
+
+        let fixed = encoder.encode_bytes(&[1, 0], &mut target[result.consumed_out..]);
+        assert!(if let Ok(LzwStatus::Done) = fixed.status { true } else { false });
+        assert_eq!(fixed.consumed_in, 2);
+
+        // Okay, now test we actually fixed it.
+        let ref mut compare = [0u8; 4];
+        let mut todo = &target[..result.consumed_out+fixed.consumed_out];
+        let mut free = &mut compare[..];
+        let mut decoder = Decoder::new(BitOrder::Msb, BIT_LEN);
+
+        // Decode with up to 16 rounds, far too much but inconsequential.
+        for _ in 0..16 {
+            if decoder.has_ended() {
+                break;
+            }
+
+            let result = decoder.decode_bytes(todo, free);
+            assert!(result.status.is_ok());
+            todo = &todo[result.consumed_in..];
+            free = &mut free[result.consumed_out..];
+        }
+
+        let remaining = {free}.len();
+        let len = compare.len() - remaining;
+        assert_eq!(todo, &[]);
+        assert_eq!(compare[..len], [0, 1, 0]);
     }
 }

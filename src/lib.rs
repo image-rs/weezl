@@ -19,7 +19,8 @@
 //!
 //! Exemplary use of the encoder:
 //!
-//! ```
+#![cfg_attr(feature = "std", doc="```")]
+#![cfg_attr(not(feature = "std"), doc="```ignore")]
 //! use weezl::{BitOrder, encode::Encoder};
 //! let size = 8;
 //! let data = b"TOBEORNOTTOBEORTOBEORNOT";
@@ -34,6 +35,8 @@
 //! restriction might be lifted at a later stage. For this you should deactivate the `std` feature.
 //! The main interfaces stay intact but the `into_stream` combinator is no available.
 #![cfg_attr(not(feature = "std"), no_std)]
+#![forbid(unsafe_code)]
+#![forbid(missing_docs)]
 
 #[cfg(all(feature = "alloc", not(feature = "std")))]
 extern crate alloc;
