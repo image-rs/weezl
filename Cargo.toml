@@ -35,3 +35,11 @@ required-features = ["std"]
 [[bench]]
 name = "msb8"
 harness = false
+
+[[example]]
+name = "lzw-compress"
+required-features = ["std"]
+
+[[example]]
+name = "lzw-decompress"
+required-features = ["std"]
