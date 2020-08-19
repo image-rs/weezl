@@ -25,7 +25,7 @@ pub struct IntoStream<'d, W> {
 }
 
 trait Stateful {
-    fn advance(&mut self, inp: &[u8], out: &mut [u8]) -> StreamResult;
+    fn advance(&mut self, inp: &[u8], out: &mut [u8]) -> BufferResult;
     fn has_ended(&self) -> bool;
     /// Ignore an end code and continue decoding (no implied reset).
     fn restart(&mut self);
@@ -110,7 +110,7 @@ struct Table {
 }
 
 /// The result of a coding operation on a pair of buffer.
-pub struct StreamResult {
+pub struct BufferResult {
     /// The number of bytes consumed from the input buffer.
     pub consumed_in: usize,
     /// The number of bytes written into the output buffer.
@@ -121,7 +121,7 @@ pub struct StreamResult {
 
 /// The result of coding into an output stream.
 #[cfg(feature = "std")]
-pub struct AllResult {
+pub struct StreamResult {
     /// The total number of bytes consumed from the reader.
     pub bytes_read: usize,
     /// The total number of bytes written into the writer.
@@ -182,7 +182,7 @@ impl Decoder {
     /// `std` feature).
     ///
     /// [`into_stream`]: #method.into_stream
-    pub fn decode_bytes(&mut self, inp: &[u8], out: &mut [u8]) -> StreamResult {
+    pub fn decode_bytes(&mut self, inp: &[u8], out: &mut [u8]) -> BufferResult {
         self.state.advance(inp, out)
     }
 
@@ -220,16 +220,16 @@ impl<W: Write> IntoStream<'_, W> {
     /// Decode data from a reader.
     ///
     /// This will read data until the stream is empty or an end marker is reached.
-    pub fn decode(&mut self, read: impl BufRead) -> AllResult {
+    pub fn decode(&mut self, read: impl BufRead) -> StreamResult {
         self.decode_part(read, false)
     }
 
     /// Decode data from a reader, requiring an end marker.
-    pub fn decode_all(mut self, read: impl BufRead) -> AllResult {
+    pub fn decode_all(mut self, read: impl BufRead) -> StreamResult {
         self.decode_part(read, true)
     }
 
-    fn decode_part(&mut self, mut read: impl BufRead, must_finish: bool) -> AllResult {
+    fn decode_part(&mut self, mut read: impl BufRead, must_finish: bool) -> StreamResult {
         let IntoStream { decoder, writer } = self;
         enum Progress {
             Ok,
@@ -299,7 +299,7 @@ impl<W: Write> IntoStream<'_, W> {
             .fuse()
             .collect();
 
-        AllResult {
+        StreamResult {
             bytes_read,
             bytes_written,
             status,
@@ -353,10 +353,10 @@ impl<C: CodeBuffer> Stateful for DecodeState<C> {
         self.code_buffer = CodeBuffer::new(self.min_size);
     }
 
-    fn advance(&mut self, mut inp: &[u8], mut out: &mut [u8]) -> StreamResult {
+    fn advance(&mut self, mut inp: &[u8], mut out: &mut [u8]) -> BufferResult {
         // Skip everything if there is nothing to do.
         if self.has_ended {
-            return StreamResult {
+            return BufferResult {
                 consumed_in: 0,
                 consumed_out: 0,
                 status: Ok(LzwStatus::Done),
@@ -683,7 +683,7 @@ impl<C: CodeBuffer> Stateful for DecodeState<C> {
         // Store the code/link state.
         self.last = code_link;
 
-        StreamResult {
+        BufferResult {
             consumed_in: o_in.wrapping_sub(inp.len()),
             consumed_out: o_out.wrapping_sub(out.len()),
             status,

@@ -1,12 +1,12 @@
 //! A module for all encoding needs.
 use crate::{MAX_CODESIZE, MAX_ENTRIES, BitOrder, Code};
-use crate::decode::{LzwError, LzwStatus, StreamResult};
+use crate::decode::{LzwError, LzwStatus, BufferResult};
 
 use crate::alloc::{boxed::Box, vec::Vec};
 #[cfg(feature = "std")]
 use std::io::{self, BufRead, Write};
 #[cfg(feature = "std")]
-use crate::decode::AllResult;
+use crate::decode::StreamResult;
 
 /// The state for encoding data with an LZW algorithm.
 ///
@@ -31,7 +31,7 @@ pub struct IntoStream<'d, W> {
 }
 
 trait Stateful {
-    fn advance(&mut self, inp: &[u8], out: &mut [u8]) -> StreamResult;
+    fn advance(&mut self, inp: &[u8], out: &mut [u8]) -> BufferResult;
     fn mark_ended(&mut self) -> bool;
 }
 
@@ -152,7 +152,7 @@ impl Encoder {
     ///
     /// [`into_stream`]: #method.into_stream
     /// [`finish`]: #method.finish
-    pub fn encode_bytes(&mut self, inp: &[u8], out: &mut [u8]) -> StreamResult {
+    pub fn encode_bytes(&mut self, inp: &[u8], out: &mut [u8]) -> BufferResult {
         self.state.advance(inp, out)
     }
 
@@ -179,16 +179,16 @@ impl<W: Write> IntoStream<'_, W> {
     ///
     /// This will drain the supplied reader. It will not encode an end marker after all data has
     /// been processed.
-    pub fn encode(&mut self, read: impl BufRead) -> AllResult {
+    pub fn encode(&mut self, read: impl BufRead) -> StreamResult {
         self.encode_part(read, false)
     }
 
     /// Encode data from a reader and an end marker.
-    pub fn encode_all(mut self, read: impl BufRead) -> AllResult {
+    pub fn encode_all(mut self, read: impl BufRead) -> StreamResult {
         self.encode_part(read, true)
     }
 
-    fn encode_part(&mut self, mut read: impl BufRead, finish: bool) -> AllResult {
+    fn encode_part(&mut self, mut read: impl BufRead, finish: bool) -> StreamResult {
         let IntoStream { encoder, writer } = self;
         enum Progress {
             Ok,
@@ -247,7 +247,7 @@ impl<W: Write> IntoStream<'_, W> {
             .fuse()
             .collect();
 
-        AllResult {
+        StreamResult {
             bytes_read,
             bytes_written,
             status,
@@ -274,7 +274,7 @@ impl<B: Buffer> EncodeState<B> {
 }
 
 impl<B: Buffer> Stateful for EncodeState<B> {
-    fn advance(&mut self, mut inp: &[u8], mut out: &mut [u8]) -> StreamResult {
+    fn advance(&mut self, mut inp: &[u8], mut out: &mut [u8]) -> BufferResult {
         let c_in = inp.len();
         let c_out = out.len();
         let mut status = Ok(LzwStatus::Ok);
@@ -354,7 +354,7 @@ impl<B: Buffer> Stateful for EncodeState<B> {
             }
         }
 
-        StreamResult {
+        BufferResult {
             consumed_in: c_in - inp.len(),
             consumed_out: c_out - out.len(),
             status,
