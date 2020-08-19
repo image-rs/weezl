@@ -19,7 +19,8 @@
 //!
 //! Exemplary use of the encoder:
 //!
-//! ```
+#![cfg_attr(feature = "std", doc="```")]
+#![cfg_attr(not(feature = "std"), doc="```ignore")]
 //! use weezl::{BitOrder, encode::Encoder};
 //! let size = 8;
 //! let data = b"TOBEORNOTTOBEORTOBEORNOT";
