@@ -1,6 +1,6 @@
 //! A module for all encoding needs.
 use crate::{MAX_CODESIZE, MAX_ENTRIES, BitOrder, Code};
-use crate::decode::{LzwStatus, StreamResult};
+use crate::decode::{LzwError, LzwStatus, StreamResult};
 
 use crate::alloc::{boxed::Box, vec::Vec};
 #[cfg(feature = "std")]
@@ -259,8 +259,9 @@ impl<B: Buffer> Stateful for EncodeState<B> {
     fn advance(&mut self, mut inp: &[u8], mut out: &mut [u8]) -> StreamResult {
         let c_in = inp.len();
         let c_out = out.len();
+        let mut status = Ok(LzwStatus::Ok);
 
-        loop {
+        'encoding: loop {
             if self.push_out(&mut out) {
                 break;
             }
@@ -291,6 +292,12 @@ impl<B: Buffer> Stateful for EncodeState<B> {
             let mut next_code = None;
             let mut bytes = inp.iter();
             while let Some(&byte) = bytes.next() {
+                if self.min_size < 8 && byte >= 1 << self.min_size {
+                    status = Err(LzwError::InvalidCode);
+                    break 'encoding;
+                }
+
+                inp = bytes.as_slice();
                 match self.tree.iterate(self.current_code, byte) {
                     Ok(code) => self.current_code = code,
                     Err(_) => {
@@ -302,7 +309,6 @@ impl<B: Buffer> Stateful for EncodeState<B> {
                 }
             }
 
-            inp = bytes.as_slice();
             match next_code {
                 // No more bytes, no code produced.
                 None => break,
@@ -324,7 +330,6 @@ impl<B: Buffer> Stateful for EncodeState<B> {
             }
         }
 
-        let mut status = Ok(LzwStatus::Ok);
         if inp.is_empty() && self.current_code == self.clear_code + 1 {
             if !self.flush_out(&mut out) {
                 status = Ok(LzwStatus::Done);
@@ -623,5 +628,24 @@ impl From<FullKey> for CompressedKey {
             FullKey::Simple(code) => 0x1000 | code,
             FullKey::Full(code) => code,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BitOrder, Encoder, LzwError};
+
+    #[test]
+    fn invalid_input_rejected() {
+        const BIT_LEN: u8 = 2;
+        let ref input = [0, 1 << BIT_LEN /* invalid */, 0];
+        let ref mut target = [0u8; 128];
+        let mut encoder = Encoder::new(BitOrder::Msb, BIT_LEN);
+
+        encoder.finish();
+        // We require simulation of normality, that is byte-for-byte compression.
+        let result = encoder.encode_bytes(input, target);
+        assert!(if let Err(LzwError::InvalidCode) = result.status { true } else { false });
+        assert_eq!(result.consumed_in, 1);
     }
 }
