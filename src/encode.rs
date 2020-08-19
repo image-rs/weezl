@@ -8,7 +8,15 @@ use std::io::{self, BufRead, Write};
 #[cfg(feature = "std")]
 use crate::decode::AllResult;
 
+/// The state for encoding data with an LZW algorithm.
+///
+/// The same structure can be utilized with streams as well as your own buffers and driver logic.
+/// It may even be possible to mix them if you are sufficiently careful not to lose any written
+/// data in the process.
 pub struct Encoder {
+    /// Internally dispatch via a dynamic trait object. This did not have any significant
+    /// performance impact as we batch data internally and this pointer does not change after
+    /// creation!
     state: Box<dyn Stateful + Send + 'static>,
 }
 
@@ -115,6 +123,11 @@ struct Full {
 }
 
 impl Encoder {
+    /// Create a new encoder with the specified bit order and symbol size.
+    ///
+    /// The algorithm for dynamically increasing the code symbol bit width is compatible with the
+    /// original specification. In particular you will need to specify an `Lsb` bit oder to encode
+    /// the data portion of a compressed `gif` image.
     pub fn new(order: BitOrder, size: u8) -> Self {
         type Boxed = Box<dyn Stateful + Send + 'static>;
         let state = match order {
