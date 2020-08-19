@@ -132,6 +132,11 @@ impl Encoder {
     /// See [`into_stream`] for high-level functions (this interface is only available with the
     /// `std` feature) and [`finish`] for marking the input data as complete.
     ///
+    /// When some input byte is invalid, i.e. is not smaller than `1 << size`, then that byte and
+    /// all following ones will _not_ be consumed and the `status` of the result will signal an
+    /// error. The result will also indicate that all bytes up to but not including the offending
+    /// byte have been consumed. You may try again with a fixed byte.
+    ///
     /// [`into_stream`]: #method.into_stream
     /// [`finish`]: #method.finish
     pub fn encode_bytes(&mut self, inp: &[u8], out: &mut [u8]) -> StreamResult {
@@ -330,7 +335,7 @@ impl<B: Buffer> Stateful for EncodeState<B> {
             }
         }
 
-        if inp.is_empty() && self.current_code == self.clear_code + 1 {
+        if inp.is_empty() && self.current_code == self.end_code() {
             if !self.flush_out(&mut out) {
                 status = Ok(LzwStatus::Done);
             }
@@ -633,7 +638,8 @@ impl From<FullKey> for CompressedKey {
 
 #[cfg(test)]
 mod tests {
-    use super::{BitOrder, Encoder, LzwError};
+    use super::{BitOrder, Encoder, LzwError, LzwStatus};
+    use crate::decode::Decoder;
 
     #[test]
     fn invalid_input_rejected() {
@@ -647,5 +653,32 @@ mod tests {
         let result = encoder.encode_bytes(input, target);
         assert!(if let Err(LzwError::InvalidCode) = result.status { true } else { false });
         assert_eq!(result.consumed_in, 1);
+
+        let fixed = encoder.encode_bytes(&[1, 0], &mut target[result.consumed_out..]);
+        assert!(if let Ok(LzwStatus::Done) = fixed.status { true } else { false });
+        assert_eq!(fixed.consumed_in, 2);
+
+        // Okay, now test we actually fixed it.
+        let ref mut compare = [0u8; 4];
+        let mut todo = &target[..result.consumed_out+fixed.consumed_out];
+        let mut free = &mut compare[..];
+        let mut decoder = Decoder::new(BitOrder::Msb, BIT_LEN);
+
+        // Decode with up to 16 rounds, far too much but inconsequential.
+        for _ in 0..16 {
+            if decoder.has_ended() {
+                break;
+            }
+
+            let result = decoder.decode_bytes(todo, free);
+            assert!(result.status.is_ok());
+            todo = &todo[result.consumed_in..];
+            free = &mut free[result.consumed_out..];
+        }
+
+        let remaining = {free}.len();
+        let len = compare.len() - remaining;
+        assert_eq!(todo, &[]);
+        assert_eq!(compare[..len], [0, 1, 0]);
     }
 }
