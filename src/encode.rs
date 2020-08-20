@@ -42,6 +42,8 @@ struct EncodeState<B: Buffer> {
     tree: Tree,
     /// If we have pushed the end code.
     has_ended: bool,
+    /// If tiff then bumps are a single code sooner.
+    is_tiff: bool,
     /// The code corresponding to the currently read characters.
     current_code: Code,
     /// The clear code for resetting the dictionary.
@@ -133,6 +135,31 @@ impl Encoder {
         let state = match order {
             BitOrder::Lsb => Box::new(EncodeState::<LsbBuffer>::new(size)) as Boxed,
             BitOrder::Msb => Box::new(EncodeState::<MsbBuffer>::new(size)) as Boxed,
+        };
+
+        Encoder {
+            state,
+        }
+    }
+
+    /// Create a TIFF compatible encoder with the specified bit order and symbol size.
+    ///
+    /// The algorithm for dynamically increasing the code symbol bit width is compatible with the
+    /// TIFF specification, which is a misinterpretation of the original algorithm for increasing
+    /// the code size. It switches one symbol sooner.
+    pub fn with_tiff_size_switch(order: BitOrder, size: u8) -> Self {
+        type Boxed = Box<dyn Stateful + Send + 'static>;
+        let state = match order {
+            BitOrder::Lsb => {
+                let mut state = Box::new(EncodeState::<LsbBuffer>::new(size));
+                state.is_tiff = true;
+                state as Boxed
+            },
+            BitOrder::Msb =>  {
+                let mut state = Box::new(EncodeState::<MsbBuffer>::new(size));
+                state.is_tiff = true;
+                state as Boxed
+            },
         };
 
         Encoder {
@@ -264,6 +291,7 @@ impl<B: Buffer> EncodeState<B> {
             min_size,
             tree,
             has_ended: false,
+            is_tiff: false,
             current_code: clear_code,
             clear_code,
             buffer: B::new(min_size),
@@ -293,7 +321,7 @@ impl<B: Buffer> Stateful for EncodeState<B> {
                         // When reading this code, the decoder will add an extra entry to its table
                         // before reading th end code. Thusly, it may increase its code size based
                         // on this additional entry.
-                        if self.tree.keys.len() + 1 > usize::from(self.buffer.max_code()) + 1
+                        if self.tree.keys.len() + usize::from(self.is_tiff) > usize::from(self.buffer.max_code())
                             && self.buffer.code_size() < MAX_CODESIZE
                         {
                             self.buffer.bump_code_size();
@@ -333,7 +361,7 @@ impl<B: Buffer> Stateful for EncodeState<B> {
                 Some(code) => {
                     self.buffer_code(code);
 
-                    if self.tree.keys.len() > usize::from(self.buffer.max_code()) + 1
+                    if self.tree.keys.len() + usize::from(self.is_tiff) > usize::from(self.buffer.max_code()) + 1
                         && self.buffer.code_size() < MAX_CODESIZE
                     {
                         self.buffer.bump_code_size();

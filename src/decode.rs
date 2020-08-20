@@ -94,6 +94,8 @@ struct DecodeState<CodeBuffer> {
     end_code: Code,
     /// A stored flag if the end code has already appeared.
     has_ended: bool,
+    /// If tiff then bumps are a single code sooner.
+    is_tiff: bool,
     /// The buffer for decoded words.
     code_buffer: CodeBuffer,
 }
@@ -169,6 +171,31 @@ impl Decoder {
         let state = match order {
             BitOrder::Lsb => Box::new(DecodeState::<LsbBuffer>::new(size)) as Boxed,
             BitOrder::Msb => Box::new(DecodeState::<MsbBuffer>::new(size)) as Boxed,
+        };
+
+        Decoder {
+            state,
+        }
+    }
+
+    /// Create a TIFF compatible decoder with the specified bit order and symbol size.
+    ///
+    /// The algorithm for dynamically increasing the code symbol bit width is compatible with the
+    /// TIFF specification, which is a misinterpretation of the original algorithm for increasing
+    /// the code size. It switches one symbol sooner.
+    pub fn with_tiff_size_switch(order: BitOrder, size: u8) -> Self {
+        type Boxed = Box<dyn Stateful + Send + 'static>;
+        let state = match order {
+            BitOrder::Lsb => {
+                let mut state = Box::new(DecodeState::<LsbBuffer>::new(size));
+                state.is_tiff = true;
+                state as Boxed
+            },
+            BitOrder::Msb =>  {
+                let mut state = Box::new(DecodeState::<MsbBuffer>::new(size));
+                state.is_tiff = true;
+                state as Boxed
+            },
         };
 
         Decoder {
@@ -318,6 +345,7 @@ impl<C: CodeBuffer> DecodeState<C> {
             end_code: (1 << min_size) + 1,
             next_code: (1 << min_size) + 2,
             has_ended: false,
+            is_tiff: false,
             code_buffer: CodeBuffer::new(min_size),
         }
     }
@@ -518,7 +546,7 @@ impl<C: CodeBuffer> Stateful for DecodeState<C> {
                 // Check that we don't overflow the code size with all codes we burst decode.
                 let potential_code = self.next_code + burst_size as u16;
                 burst_size += 1;
-                if potential_code == self.code_buffer.max_code() {
+                if potential_code == self.code_buffer.max_code() - Code::from(self.is_tiff) {
                     break;
                 }
 
@@ -643,7 +671,10 @@ impl<C: CodeBuffer> Stateful for DecodeState<C> {
             if !self.table.is_full() {
                 let link = self.table.derive(&link, cha, code);
 
-                if self.next_code == self.code_buffer.max_code() && self.code_buffer.code_size() < MAX_CODESIZE {
+                if
+                    self.next_code == self.code_buffer.max_code() - Code::from(self.is_tiff)
+                    && self.code_buffer.code_size() < MAX_CODESIZE
+                {
                     self.bump_code_size();
                 }
 
