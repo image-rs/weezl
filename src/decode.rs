@@ -1,5 +1,8 @@
 //! A module for all decoding needs.
 use crate::{MAX_CODESIZE, MAX_ENTRIES, BitOrder, Code};
+use crate::error::{BufferResult, LzwStatus, LzwError};
+#[cfg(feature = "std")]
+use crate::error::StreamResult;
 
 use crate::alloc::{boxed::Box, vec, vec::Vec};
 #[cfg(feature = "std")]
@@ -94,6 +97,8 @@ struct DecodeState<CodeBuffer> {
     end_code: Code,
     /// A stored flag if the end code has already appeared.
     has_ended: bool,
+    /// If tiff then bumps are a single code sooner.
+    is_tiff: bool,
     /// The buffer for decoded words.
     code_buffer: CodeBuffer,
 }
@@ -109,55 +114,6 @@ struct Table {
     depths: Vec<u16>,
 }
 
-/// The result of a coding operation on a pair of buffer.
-pub struct BufferResult {
-    /// The number of bytes consumed from the input buffer.
-    pub consumed_in: usize,
-    /// The number of bytes written into the output buffer.
-    pub consumed_out: usize,
-    /// The status after returning from the write call.
-    pub status: Result<LzwStatus, LzwError>,
-}
-
-/// The result of coding into an output stream.
-#[cfg(feature = "std")]
-pub struct StreamResult {
-    /// The total number of bytes consumed from the reader.
-    pub bytes_read: usize,
-    /// The total number of bytes written into the writer.
-    pub bytes_written: usize,
-    /// The possible error that occurred.
-    ///
-    /// Note that when writing into streams it is not in general possible to recover from an error.
-    pub status: std::io::Result<()>,
-}
-
-/// The status after successful coding of an LZW stream.
-#[derive(Debug, Clone, Copy)]
-pub enum LzwStatus {
-    /// Everything went well.
-    Ok,
-    /// No bytes were read or written and no internal state advanced.
-    ///
-    /// If this is returned but your application can not provide more input data then decoding is
-    /// definitely stuck for good and it should stop trying and report some error of its own. In
-    /// other situations this may be used as a signal to refill an internal buffer.
-    NoProgress,
-    /// No more data will be produced because an end marker was reached.
-    Done,
-}
-
-/// The error kind after unsuccessful coding of an LZW stream.
-#[derive(Debug, Clone, Copy)]
-pub enum LzwError {
-    /// The input contained an invalid code.
-    ///
-    /// For decompression this refers to a code larger than those currently known through the prior
-    /// decoding stages. For compression this refers to a byte that has no code representation due
-    /// to being larger than permitted by the `size` parameter given to the Encoder.
-    InvalidCode,
-}
-
 impl Decoder {
     /// Create a new decoder with the specified bit order and symbol size.
     ///
@@ -169,6 +125,31 @@ impl Decoder {
         let state = match order {
             BitOrder::Lsb => Box::new(DecodeState::<LsbBuffer>::new(size)) as Boxed,
             BitOrder::Msb => Box::new(DecodeState::<MsbBuffer>::new(size)) as Boxed,
+        };
+
+        Decoder {
+            state,
+        }
+    }
+
+    /// Create a TIFF compatible decoder with the specified bit order and symbol size.
+    ///
+    /// The algorithm for dynamically increasing the code symbol bit width is compatible with the
+    /// TIFF specification, which is a misinterpretation of the original algorithm for increasing
+    /// the code size. It switches one symbol sooner.
+    pub fn with_tiff_size_switch(order: BitOrder, size: u8) -> Self {
+        type Boxed = Box<dyn Stateful + Send + 'static>;
+        let state = match order {
+            BitOrder::Lsb => {
+                let mut state = Box::new(DecodeState::<LsbBuffer>::new(size));
+                state.is_tiff = true;
+                state as Boxed
+            },
+            BitOrder::Msb =>  {
+                let mut state = Box::new(DecodeState::<MsbBuffer>::new(size));
+                state.is_tiff = true;
+                state as Boxed
+            },
         };
 
         Decoder {
@@ -318,6 +299,7 @@ impl<C: CodeBuffer> DecodeState<C> {
             end_code: (1 << min_size) + 1,
             next_code: (1 << min_size) + 2,
             has_ended: false,
+            is_tiff: false,
             code_buffer: CodeBuffer::new(min_size),
         }
     }
@@ -518,7 +500,7 @@ impl<C: CodeBuffer> Stateful for DecodeState<C> {
                 // Check that we don't overflow the code size with all codes we burst decode.
                 let potential_code = self.next_code + burst_size as u16;
                 burst_size += 1;
-                if potential_code == self.code_buffer.max_code() {
+                if potential_code == self.code_buffer.max_code() - Code::from(self.is_tiff) {
                     break;
                 }
 
@@ -643,7 +625,10 @@ impl<C: CodeBuffer> Stateful for DecodeState<C> {
             if !self.table.is_full() {
                 let link = self.table.derive(&link, cha, code);
 
-                if self.next_code == self.code_buffer.max_code() && self.code_buffer.code_size() < MAX_CODESIZE {
+                if
+                    self.next_code == self.code_buffer.max_code() - Code::from(self.is_tiff)
+                    && self.code_buffer.code_size() < MAX_CODESIZE
+                {
                     self.bump_code_size();
                 }
 
