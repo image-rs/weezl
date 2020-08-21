@@ -1,12 +1,12 @@
 //! A module for all encoding needs.
 use crate::{MAX_CODESIZE, MAX_ENTRIES, BitOrder, Code};
-use crate::decode::{LzwError, LzwStatus, BufferResult};
+use crate::error::{LzwError, LzwStatus, BufferResult};
 
 use crate::alloc::{boxed::Box, vec::Vec};
 #[cfg(feature = "std")]
 use std::io::{self, BufRead, Write};
 #[cfg(feature = "std")]
-use crate::decode::StreamResult;
+use crate::error::StreamResult;
 
 /// The state for encoding data with an LZW algorithm.
 ///

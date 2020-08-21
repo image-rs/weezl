@@ -61,3 +61,8 @@ pub enum BitOrder {
 pub mod encode;
 #[cfg(feature = "alloc")]
 pub mod decode;
+mod error;
+
+pub use self::error::{BufferResult, LzwStatus, LzwError};
+#[cfg(feature = "std")]
+pub use self::error::StreamResult;
