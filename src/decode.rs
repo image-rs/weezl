@@ -19,7 +19,7 @@ pub struct Decoder {
 
 /// A decoding stream sink.
 ///
-/// See [`Decoder::into_stream`] on how to create this type and more information.
+/// See [`Decoder::into_stream`] on how to create this type.
 ///
 /// [`Decoder::into_stream`]: struct.Decoder.html#method.into_stream
 pub struct IntoStream<'d, W> {
@@ -159,8 +159,16 @@ impl Decoder {
 
     /// Decode some bytes from `inp` and write result to `out`.
     ///
-    /// See [`into_stream`] for high-level functions (this interface is only available with the
-    /// `std` feature).
+    /// This will consume a prefix of the input buffer and write decoded output into a prefix of
+    /// the output buffer. See the respective fields of the return value for the count of consumed
+    /// and written bytes. For the next call You should have adjusted the inputs accordingly.
+    ///
+    /// The call will try to decode and write as many bytes of output as available. It will be
+    /// much more optimized (and avoid intermediate buffering) if it is allowed to write a large
+    /// contiguous chunk at once.
+    ///
+    /// See [`into_stream`] for high-level functions (that are only available with the `std`
+    /// feature).
     ///
     /// [`into_stream`]: #method.into_stream
     pub fn decode_bytes(&mut self, inp: &[u8], out: &mut [u8]) -> BufferResult {
@@ -174,14 +182,21 @@ impl Decoder {
     }
 
     /// Check if the decoding has finished.
+    ///
+    /// No more output is produced beyond the end code that marked the finish of the stream. The
+    /// decoder may have read additional bytes, including padding bits beyond the last code word
+    /// but also excess bytes provided.
     pub fn has_ended(&self) -> bool {
         self.state.has_ended()
     }
 
-    /// Ignore an encode code (if there was one) and continue.
+    /// Ignore an end code and continue.
     ///
     /// This will _not_ reset any of the inner code tables and not have the effect of a clear code.
-    /// It will instead continue as if the end code had not been present.
+    /// It will instead continue as if the end code had not been present. If no end code has
+    /// occurred then this is a no-op.
+    ///
+    /// You can test if an end code has occurred with [`has_ended`](#method.has_ended).
     pub fn restart(&mut self) {
         self.state.restart();
     }

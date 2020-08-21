@@ -22,7 +22,7 @@ pub struct Encoder {
 
 /// A encoding stream sink.
 ///
-/// See [`Encoder::into_stream`] on how to create this type and more information.
+/// See [`Encoder::into_stream`] on how to create this type.
 ///
 /// [`Encoder::into_stream`]: struct.Encoder.html#method.into_stream
 pub struct IntoStream<'d, W> {
@@ -183,18 +183,19 @@ impl Encoder {
         self.state.advance(inp, out)
     }
 
-    /// Construct a decoder into a writer.
+    /// Construct a encoder into a writer.
     #[cfg(feature = "std")]
     pub fn into_stream<W: Write>(&mut self, writer: W) -> IntoStream<'_, W> {
         IntoStream { encoder: self, writer }
     }
 
-    /// Mark the encoding as finished.
+    /// Mark the encoding as in the process of finishing.
     ///
-    /// In following calls to `encode_bytes` the encoder will try to emit an end code after
-    /// encoding all of `inp`. It's not recommended, but also not unsound, to use different byte
-    /// slices in different calls from this point forward. The behaviour after the end marker has
-    /// been written is unspecified but again you can rely on its being sound.
+    /// The next following call to `encode_bytes` which is able to consume the complete input will
+    /// also try to emit an end code. It's not recommended, but also not unsound, to use different
+    /// byte slices in different calls from this point forward and thus to 'delay' the actual end
+    /// of the data stream. The behaviour after the end marker has been written is unspecified but
+    /// sound.
     pub fn finish(&mut self) {
         self.state.mark_ended();
     }
