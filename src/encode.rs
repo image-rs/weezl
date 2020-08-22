@@ -22,7 +22,7 @@ pub struct Encoder {
 
 /// A encoding stream sink.
 ///
-/// See [`Encoder::into_stream`] on how to create this type and more information.
+/// See [`Encoder::into_stream`] on how to create this type.
 ///
 /// [`Encoder::into_stream`]: struct.Encoder.html#method.into_stream
 pub struct IntoStream<'d, W> {
@@ -33,6 +33,10 @@ pub struct IntoStream<'d, W> {
 trait Stateful {
     fn advance(&mut self, inp: &[u8], out: &mut [u8]) -> BufferResult;
     fn mark_ended(&mut self) -> bool;
+    /// Reset the state tracking if end code has been written.
+    fn restart(&mut self);
+    /// Reset the decoder to the beginning, dropping all buffers etc.
+    fn reset(&mut self);
 }
 
 struct EncodeState<B: Buffer> {
@@ -183,20 +187,37 @@ impl Encoder {
         self.state.advance(inp, out)
     }
 
-    /// Construct a decoder into a writer.
+    /// Construct a encoder into a writer.
     #[cfg(feature = "std")]
     pub fn into_stream<W: Write>(&mut self, writer: W) -> IntoStream<'_, W> {
         IntoStream { encoder: self, writer }
     }
 
-    /// Mark the encoding as finished.
+    /// Mark the encoding as in the process of finishing.
     ///
-    /// In following calls to `encode_bytes` the encoder will try to emit an end code after
-    /// encoding all of `inp`. It's not recommended, but also not unsound, to use different byte
-    /// slices in different calls from this point forward. The behaviour after the end marker has
-    /// been written is unspecified but again you can rely on its being sound.
+    /// The next following call to `encode_bytes` which is able to consume the complete input will
+    /// also try to emit an end code. It's not recommended, but also not unsound, to use different
+    /// byte slices in different calls from this point forward and thus to 'delay' the actual end
+    /// of the data stream. The behaviour after the end marker has been written is unspecified but
+    /// sound.
     pub fn finish(&mut self) {
         self.state.mark_ended();
+    }
+
+    /// Undo marking this data stream as ending.
+    /// FIXME: clarify how this interacts with padding introduced after end code.
+    #[allow(dead_code)]
+    pub(crate) fn restart(&mut self) {
+        self.state.restart()
+    }
+
+    /// Reset all internal state.
+    ///
+    /// This produce an encoder as if just constructed with `new` but taking slightly less work. In
+    /// particular it will not deallocate any internal allocations. It will also avoid some
+    /// duplicate setup work.
+    pub fn reset(&mut self) {
+        self.state.reset()
     }
 }
 
@@ -392,6 +413,19 @@ impl<B: Buffer> Stateful for EncodeState<B> {
     fn mark_ended(&mut self) -> bool {
         core::mem::replace(&mut self.has_ended, true)
     }
+
+    fn restart(&mut self) {
+        self.has_ended = false;
+    }
+
+    fn reset(&mut self) {
+        self.restart();
+        self.current_code = self.clear_code;
+        self.tree.reset(self.min_size);
+        self.buffer.reset(self.min_size);
+        self.buffer_code(self.clear_code);
+    }
+
 }
 
 impl<B: Buffer> EncodeState<B> {
