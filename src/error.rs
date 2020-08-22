@@ -1,4 +1,5 @@
 /// The result of a coding operation on a pair of buffer.
+#[must_use = "Contains a status with potential error information"]
 pub struct BufferResult {
     /// The number of bytes consumed from the input buffer.
     pub consumed_in: usize,
@@ -10,6 +11,7 @@ pub struct BufferResult {
 
 /// The result of coding into an output stream.
 #[cfg(feature = "std")]
+#[must_use = "Contains a status with potential error information"]
 pub struct StreamResult {
     /// The total number of bytes consumed from the reader.
     pub bytes_read: usize,
