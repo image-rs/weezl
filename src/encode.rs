@@ -33,6 +33,10 @@ pub struct IntoStream<'d, W> {
 trait Stateful {
     fn advance(&mut self, inp: &[u8], out: &mut [u8]) -> BufferResult;
     fn mark_ended(&mut self) -> bool;
+    /// Reset the state tracking if end code has been written.
+    fn restart(&mut self);
+    /// Reset the decoder to the beginning, dropping all buffers etc.
+    fn reset(&mut self);
 }
 
 struct EncodeState<B: Buffer> {
@@ -198,6 +202,20 @@ impl Encoder {
     /// sound.
     pub fn finish(&mut self) {
         self.state.mark_ended();
+    }
+
+    /// Undo marking this data stream as ending.
+    pub fn restart(&mut self) {
+        self.state.restart()
+    }
+
+    /// Reset all internal state.
+    ///
+    /// This produce an encoder as if just constructed with `new` but taking slightly less work. In
+    /// particular it will not deallocate any internal allocations. It will also avoid some
+    /// duplicate setup work.
+    pub fn reset(&mut self) {
+        self.state.reset()
     }
 }
 
@@ -393,6 +411,19 @@ impl<B: Buffer> Stateful for EncodeState<B> {
     fn mark_ended(&mut self) -> bool {
         core::mem::replace(&mut self.has_ended, true)
     }
+
+    fn restart(&mut self) {
+        self.has_ended = false;
+    }
+
+    fn reset(&mut self) {
+        self.restart();
+        self.current_code = self.clear_code;
+        self.tree.reset(self.min_size);
+        self.buffer.reset(self.min_size);
+        self.buffer_code(self.clear_code);
+    }
+
 }
 
 impl<B: Buffer> EncodeState<B> {
