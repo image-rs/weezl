@@ -1,9 +1,7 @@
-## 0.1.0-beta.1
+## Version 0.1.0 – Aleph
 
-Renamed `AllResult` to `StreamResult` and `StreamResult` to `BufferResult`.
-A lot of other interface compatible polish
-
-## 0.1.0-beta.0
-
-Fixed a bug from 0.1.0-alpha that caused decoding to skip over one word. This
-might have potentially even corrupted the output of subsequent words.
+- Initial major release
+- Support gif and tiff code size changes
+- Rough performance numbers:
+  On i5-4690, 8GiB DIMM DDR3 Synchronous 1600 MHz (0,6 ns)
+  ~70MB/s encode, ~230MB/s decode
