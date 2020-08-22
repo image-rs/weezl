@@ -197,7 +197,9 @@ impl Decoder {
     /// occurred then this is a no-op.
     ///
     /// You can test if an end code has occurred with [`has_ended`](#method.has_ended).
-    pub fn restart(&mut self) {
+    /// FIXME: clarify how this interacts with padding introduced after end code.
+    #[allow(dead_code)]
+    pub(crate) fn restart(&mut self) {
         self.state.restart();
     }
 

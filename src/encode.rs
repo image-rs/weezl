@@ -205,7 +205,9 @@ impl Encoder {
     }
 
     /// Undo marking this data stream as ending.
-    pub fn restart(&mut self) {
+    /// FIXME: clarify how this interacts with padding introduced after end code.
+    #[allow(dead_code)]
+    pub(crate) fn restart(&mut self) {
         self.state.restart()
     }
 
