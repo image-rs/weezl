@@ -1,8 +1,8 @@
 //! A module for all decoding needs.
-use crate::{MAX_CODESIZE, MAX_ENTRIES, BitOrder, Code};
-use crate::error::{BufferResult, LzwStatus, LzwError};
 #[cfg(feature = "std")]
 use crate::error::StreamResult;
+use crate::error::{BufferResult, LzwError, LzwStatus};
+use crate::{BitOrder, Code, MAX_CODESIZE, MAX_ENTRIES};
 
 use crate::alloc::{boxed::Box, vec, vec::Vec};
 #[cfg(feature = "std")]
@@ -127,9 +127,7 @@ impl Decoder {
             BitOrder::Msb => Box::new(DecodeState::<MsbBuffer>::new(size)) as Boxed,
         };
 
-        Decoder {
-            state,
-        }
+        Decoder { state }
     }
 
     /// Create a TIFF compatible decoder with the specified bit order and symbol size.
@@ -144,17 +142,15 @@ impl Decoder {
                 let mut state = Box::new(DecodeState::<LsbBuffer>::new(size));
                 state.is_tiff = true;
                 state as Boxed
-            },
-            BitOrder::Msb =>  {
+            }
+            BitOrder::Msb => {
                 let mut state = Box::new(DecodeState::<MsbBuffer>::new(size));
                 state.is_tiff = true;
                 state as Boxed
-            },
+            }
         };
 
-        Decoder {
-            state,
-        }
+        Decoder { state }
     }
 
     /// Decode some bytes from `inp` and write result to `out`.
@@ -178,7 +174,10 @@ impl Decoder {
     /// Construct a decoder into a writer.
     #[cfg(feature = "std")]
     pub fn into_stream<W: Write>(&mut self, writer: W) -> IntoStream<'_, W> {
-        IntoStream { decoder: self, writer }
+        IntoStream {
+            decoder: self,
+            writer,
+        }
     }
 
     /// Check if the decoding has finished.
@@ -256,18 +255,22 @@ impl<W: Write> IntoStream<'_, W> {
             read.consume(result.consumed_in);
 
             // Handle the status in the result.
-            let done = result.status.map_err(|err| io::Error::new(
-                    io::ErrorKind::InvalidData, &*format!("{:?}", err)
-                ))?;
+            let done = result.status.map_err(|err| {
+                io::Error::new(io::ErrorKind::InvalidData, &*format!("{:?}", err))
+            })?;
 
             // Check if we had any new data at all.
             if let LzwStatus::NoProgress = done {
-                debug_assert_eq!(result.consumed_out, 0, "No progress means we have not decoded any data");
+                debug_assert_eq!(
+                    result.consumed_out, 0,
+                    "No progress means we have not decoded any data"
+                );
                 // In particular we did not finish decoding.
                 if must_finish {
                     return Err(io::Error::new(
-                            io::ErrorKind::UnexpectedEof, "No more data but no end marker detected"
-                        ));
+                        io::ErrorKind::UnexpectedEof,
+                        "No more data but no end marker detected",
+                    ));
                 } else {
                     return Ok(Progress::Done);
                 }
@@ -508,7 +511,7 @@ impl<C: CodeBuffer> Stateful for DecodeState<C> {
                 // We can commit the previous burst code, and will take a slice from the output
                 // buffer. This also avoids the bounds check in the tight loop later.
                 if burst_size > 0 {
-                    let len = bytes[burst_size-1];
+                    let len = bytes[burst_size - 1];
                     let (into, tail) = out.split_at_mut(usize::from(len));
                     target[burst_size - 1] = into;
                     out = tail;
@@ -532,7 +535,7 @@ impl<C: CodeBuffer> Stateful for DecodeState<C> {
                     break;
                 }
 
-                bytes[burst_size-1] = len;
+                bytes[burst_size - 1] = len;
             }
 
             // No code left, and no more bytes to fill the buffer.
@@ -551,7 +554,7 @@ impl<C: CodeBuffer> Stateful for DecodeState<C> {
             let (&new_code, burst) = burst[..burst_size].split_last().unwrap();
 
             // The very tight loop for restoring the actual burst.
-            for (&burst, target) in burst.iter().zip(&mut target[..burst_size-1]) {
+            for (&burst, target) in burst.iter().zip(&mut target[..burst_size - 1]) {
                 let cha = self.buffer.reconstruct_direct(&self.table, burst, target);
                 // TODO: this pushes into a Vec, maybe we can make this cleaner.
                 // Theoretically this has a branch and llvm tends to be flaky with code layout for
@@ -563,7 +566,7 @@ impl<C: CodeBuffer> Stateful for DecodeState<C> {
             }
 
             // Update the slice holding the last decoded word.
-            if let Some(new_last) = target[..burst_size-1].last_mut() {
+            if let Some(new_last) = target[..burst_size - 1].last_mut() {
                 let slice = core::mem::replace(new_last, &mut []);
                 last_decoded = Some(&*slice);
             }
@@ -629,7 +632,9 @@ impl<C: CodeBuffer> Stateful for DecodeState<C> {
                     target[..source.len()].copy_from_slice(source);
                     target[source.len()..][0] = source[0];
                 } else {
-                    cha = self.buffer.reconstruct_direct(&self.table, new_code, target);
+                    cha = self
+                        .buffer
+                        .reconstruct_direct(&self.table, new_code, target);
                 }
 
                 // A new decoded word.
@@ -642,8 +647,7 @@ impl<C: CodeBuffer> Stateful for DecodeState<C> {
             if !self.table.is_full() {
                 let link = self.table.derive(&link, cha, code);
 
-                if
-                    self.next_code == self.code_buffer.max_code() - Code::from(self.is_tiff)
+                if self.next_code == self.code_buffer.max_code() - Code::from(self.is_tiff)
                     && self.code_buffer.code_size() < MAX_CODESIZE
                 {
                     self.bump_code_size();
@@ -888,7 +892,7 @@ impl Buffer {
             //(code, cha) = self.table[k as usize];
             // Note: This could possibly be replaced with an unchecked array access if
             //  - value is asserted to be < self.next_code() in push
-            //  - min_size is asserted to be < MAX_CODESIZE 
+            //  - min_size is asserted to be < MAX_CODESIZE
             let entry = &table[usize::from(code_iter)];
             code_iter = core::cmp::min(len, entry.prev);
             *ch = entry.byte;
