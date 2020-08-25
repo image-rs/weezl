@@ -1,13 +1,15 @@
 extern crate criterion;
 extern crate weezl;
 
-use std::fs;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use weezl::{BitOrder, decode::{Decoder, LzwStatus}};
+use std::fs;
+use weezl::{
+    decode::{Decoder, LzwStatus},
+    BitOrder,
+};
 
 pub fn criterion_benchmark(c: &mut Criterion, file: &str) {
-    let data = fs::read(file)
-        .expect("Benchmark input not found");
+    let data = fs::read(file).expect("Benchmark input not found");
     let mut group = c.benchmark_group("msb-8");
     let id = BenchmarkId::new(file, data.len());
     let mut outbuf = vec![0; 1 << 26]; // 64MB, what wuff uses..
@@ -32,9 +34,11 @@ pub fn criterion_benchmark(c: &mut Criterion, file: &str) {
         written
     };
     group.throughput(Throughput::Bytes(decode_once(&data) as u64));
-    group.bench_with_input(id, &data, |b, data| b.iter(|| {
-        decode_once(data);
-    }));
+    group.bench_with_input(id, &data, |b, data| {
+        b.iter(|| {
+            decode_once(data);
+        })
+    });
 }
 
 pub fn bench_toml(c: &mut Criterion) {

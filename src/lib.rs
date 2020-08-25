@@ -19,8 +19,8 @@
 //!
 //! Exemplary use of the encoder:
 //!
-#![cfg_attr(feature = "std", doc="```")]
-#![cfg_attr(not(feature = "std"), doc="```ignore")]
+#![cfg_attr(feature = "std", doc = "```")]
+#![cfg_attr(not(feature = "std"), doc = "```ignore")]
 //! use weezl::{BitOrder, encode::Encoder};
 //! let size = 8;
 //! let data = b"TOBEORNOTTOBEORTOBEORNOT";
@@ -58,11 +58,11 @@ pub enum BitOrder {
 }
 
 #[cfg(feature = "alloc")]
-pub mod encode;
-#[cfg(feature = "alloc")]
 pub mod decode;
+#[cfg(feature = "alloc")]
+pub mod encode;
 mod error;
 
-pub use self::error::{BufferResult, LzwStatus, LzwError};
 #[cfg(feature = "std")]
 pub use self::error::StreamResult;
+pub use self::error::{BufferResult, LzwError, LzwStatus};

@@ -1,8 +1,8 @@
-use std::{env, io, ffi, fs, process};
 use std::path::PathBuf;
+use std::{env, ffi, fs, io, process};
 
 extern crate weezl;
-use weezl::{encode as enlzw, decode as delzw, BitOrder};
+use weezl::{decode as delzw, encode as enlzw, BitOrder};
 
 fn main() {
     let args = env::args_os().skip(1);
@@ -19,7 +19,9 @@ fn main() {
     let operation = flags.operation.unwrap_or_else(explain);
     let min_code = if flags.min_code < 2 || flags.min_code > 12 {
         return explain();
-    } else { flags.min_code };
+    } else {
+        flags.min_code
+    };
     let bit_order = flags.bit_order;
 
     let result = match (input, operation) {
@@ -34,7 +36,7 @@ fn main() {
             let input = io::BufReader::with_capacity(1 << 26, io::stdin());
             let mut encoder = enlzw::Encoder::new(bit_order, min_code);
             encoder.into_stream(out).encode_all(input).status
-        },
+        }
         (Input::File(file), Operation::Decode) => (|| {
             let data = fs::File::open(file)?;
             let file = io::BufReader::with_capacity(1 << 26, data);
@@ -72,11 +74,13 @@ enum Operation {
 }
 
 fn explain<T>() -> T {
-    println!("Usage: lzw [-e|-d] <file>\n\
+    println!(
+        "Usage: lzw [-e|-d] <file>\n\
         Arguments:\n\
         -e\t operation encode (default)\n\
         -d\t operation decode\n\
-        <file>\tfilepath or '-' for stdin");
+        <file>\tfilepath or '-' for stdin"
+    );
     process::exit(1);
 }
 
@@ -92,7 +96,7 @@ impl Default for Flags {
 }
 
 impl Flags {
-    fn from_args(mut args: impl Iterator<Item=ffi::OsString>) -> Result<Self, ParamError> {
+    fn from_args(mut args: impl Iterator<Item = ffi::OsString>) -> Result<Self, ParamError> {
         let mut flags = Flags::default();
         let mut operation = None;
         loop {
@@ -102,31 +106,29 @@ impl Flags {
                         return Err(ParamError);
                     }
                     operation = Some(Operation::Decode);
-                },
+                }
                 Some("-e") | Some("--encode") => {
                     if operation.is_some() {
                         return Err(ParamError);
                     }
                     operation = Some(Operation::Encode);
-                },
-                Some("-w") | Some("--word-bits") => {
-                    match args.next() {
-                        None => return Err(ParamError),
-                        Some(bits) => {
-                            let st = bits.to_str().ok_or(ParamError)?;
-                            flags.min_code = st.parse().ok().ok_or(ParamError)?;
-                        }
+                }
+                Some("-w") | Some("--word-bits") => match args.next() {
+                    None => return Err(ParamError),
+                    Some(bits) => {
+                        let st = bits.to_str().ok_or(ParamError)?;
+                        flags.min_code = st.parse().ok().ok_or(ParamError)?;
                     }
                 },
                 Some("-le") | Some("--little-endian") => {
                     flags.bit_order = BitOrder::Lsb;
-                },
+                }
                 Some("-be") | Some("--big-endian") | Some("-ne") | Some("--network-endian") => {
                     flags.bit_order = BitOrder::Msb;
-                },
+                }
                 Some("-") => {
                     flags.files.push(Input::Stdin);
-                },
+                }
                 Some(other) if other.starts_with('-') => {
                     // Reserved for future use.
                     // -a: self-describing archive format, similar to actual compress
@@ -134,10 +136,10 @@ impl Flags {
                     // -v: verbosity
                     // some compress compatibility mode? Probably through arg(0) though.
                     return Err(ParamError);
-                },
+                }
                 Some(file) => {
                     flags.files.push(Input::File(file.into()));
-                },
+                }
                 None => break,
             };
         }

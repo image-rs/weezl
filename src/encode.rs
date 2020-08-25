@@ -1,12 +1,12 @@
 //! A module for all encoding needs.
-use crate::{MAX_CODESIZE, MAX_ENTRIES, BitOrder, Code};
-use crate::error::{LzwError, LzwStatus, BufferResult};
+use crate::error::{BufferResult, LzwError, LzwStatus};
+use crate::{BitOrder, Code, MAX_CODESIZE, MAX_ENTRIES};
 
 use crate::alloc::{boxed::Box, vec::Vec};
 #[cfg(feature = "std")]
-use std::io::{self, BufRead, Write};
-#[cfg(feature = "std")]
 use crate::error::StreamResult;
+#[cfg(feature = "std")]
+use std::io::{self, BufRead, Write};
 
 /// The state for encoding data with an LZW algorithm.
 ///
@@ -141,9 +141,7 @@ impl Encoder {
             BitOrder::Msb => Box::new(EncodeState::<MsbBuffer>::new(size)) as Boxed,
         };
 
-        Encoder {
-            state,
-        }
+        Encoder { state }
     }
 
     /// Create a TIFF compatible encoder with the specified bit order and symbol size.
@@ -158,17 +156,15 @@ impl Encoder {
                 let mut state = Box::new(EncodeState::<LsbBuffer>::new(size));
                 state.is_tiff = true;
                 state as Boxed
-            },
-            BitOrder::Msb =>  {
+            }
+            BitOrder::Msb => {
                 let mut state = Box::new(EncodeState::<MsbBuffer>::new(size));
                 state.is_tiff = true;
                 state as Boxed
-            },
+            }
         };
 
-        Encoder {
-            state,
-        }
+        Encoder { state }
     }
 
     /// Encode some bytes from `inp` into `out`.
@@ -190,7 +186,10 @@ impl Encoder {
     /// Construct a encoder into a writer.
     #[cfg(feature = "std")]
     pub fn into_stream<W: Write>(&mut self, writer: W) -> IntoStream<'_, W> {
-        IntoStream { encoder: self, writer }
+        IntoStream {
+            encoder: self,
+            writer,
+        }
     }
 
     /// Mark the encoding as in the process of finishing.
@@ -257,7 +256,7 @@ impl<W: Write> IntoStream<'_, W> {
                 if finish {
                     encoder.finish();
                 } else {
-                    return Ok(Progress::Done)
+                    return Ok(Progress::Done);
                 }
             }
 
@@ -266,9 +265,9 @@ impl<W: Write> IntoStream<'_, W> {
             *write_bytes += result.consumed_out;
             read.consume(result.consumed_in);
 
-            let done = result.status.map_err(|err| io::Error::new(
-                    io::ErrorKind::InvalidData, &*format!("{:?}", err)
-                ))?;
+            let done = result.status.map_err(|err| {
+                io::Error::new(io::ErrorKind::InvalidData, &*format!("{:?}", err))
+            })?;
 
             if let LzwStatus::Done = done {
                 writer.write_all(&outbuf[..result.consumed_out])?;
@@ -277,8 +276,9 @@ impl<W: Write> IntoStream<'_, W> {
 
             if let LzwStatus::NoProgress = done {
                 return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof, "No more data but no end marker detected"
-                    ));
+                    io::ErrorKind::UnexpectedEof,
+                    "No more data but no end marker detected",
+                ));
             }
 
             writer.write_all(&outbuf[..result.consumed_out])?;
@@ -342,7 +342,8 @@ impl<B: Buffer> Stateful for EncodeState<B> {
                         // When reading this code, the decoder will add an extra entry to its table
                         // before reading th end code. Thusly, it may increase its code size based
                         // on this additional entry.
-                        if self.tree.keys.len() + usize::from(self.is_tiff) > usize::from(self.buffer.max_code())
+                        if self.tree.keys.len() + usize::from(self.is_tiff)
+                            > usize::from(self.buffer.max_code())
                             && self.buffer.code_size() < MAX_CODESIZE
                         {
                             self.buffer.bump_code_size();
@@ -372,7 +373,7 @@ impl<B: Buffer> Stateful for EncodeState<B> {
 
                         self.current_code = u16::from(byte);
                         break;
-                    },
+                    }
                 }
             }
 
@@ -382,7 +383,8 @@ impl<B: Buffer> Stateful for EncodeState<B> {
                 Some(code) => {
                     self.buffer_code(code);
 
-                    if self.tree.keys.len() + usize::from(self.is_tiff) > usize::from(self.buffer.max_code()) + 1
+                    if self.tree.keys.len() + usize::from(self.is_tiff)
+                        > usize::from(self.buffer.max_code()) + 1
                         && self.buffer.code_size() < MAX_CODESIZE
                     {
                         self.buffer.bump_code_size();
@@ -425,7 +427,6 @@ impl<B: Buffer> Stateful for EncodeState<B> {
         self.buffer.reset(self.min_size);
         self.buffer_code(self.clear_code);
     }
-
 }
 
 impl<B: Buffer> EncodeState<B> {
@@ -470,7 +471,7 @@ impl Buffer for MsbBuffer {
     }
 
     fn push_out(&mut self, out: &mut &mut [u8]) -> bool {
-        if self.bits_in_buffer + 2*self.code_size < 64 {
+        if self.bits_in_buffer + 2 * self.code_size < 64 {
             return false;
         }
 
@@ -478,7 +479,7 @@ impl Buffer for MsbBuffer {
     }
 
     fn flush_out(&mut self, out: &mut &mut [u8]) -> bool {
-        let want = usize::from(self.bits_in_buffer/8);
+        let want = usize::from(self.bits_in_buffer / 8);
         let count = want.min((*out).len());
         let (bytes, tail) = core::mem::replace(out, &mut []).split_at_mut(count);
         *out = tail;
@@ -529,7 +530,7 @@ impl Buffer for LsbBuffer {
     }
 
     fn push_out(&mut self, out: &mut &mut [u8]) -> bool {
-        if self.bits_in_buffer + 2*self.code_size < 64 {
+        if self.bits_in_buffer + 2 * self.code_size < 64 {
             return false;
         }
 
@@ -537,7 +538,7 @@ impl Buffer for LsbBuffer {
     }
 
     fn flush_out(&mut self, out: &mut &mut [u8]) -> bool {
-        let want = usize::from(self.bits_in_buffer/8);
+        let want = usize::from(self.bits_in_buffer / 8);
         let count = want.min((*out).len());
         let (bytes, tail) = core::mem::replace(out, &mut []).split_at_mut(count);
         *out = tail;
@@ -573,7 +574,8 @@ impl Tree {
     fn init(&mut self, min_size: u8) {
         // We need a way to represent the state of a currently empty buffer. We use the clear code
         // for this, thus create one complex mapping that leads to the one-char base codes.
-        self.keys.resize((1 << min_size) + 2, FullKey::NoSuccessor.into());
+        self.keys
+            .resize((1 << min_size) + 2, FullKey::NoSuccessor.into());
         self.complex.push(Full {
             char_continuation: [0; 256],
         });
@@ -600,7 +602,10 @@ impl Tree {
             FullKey::NoSuccessor => None,
             FullKey::Simple(idx) => {
                 let nexts = &self.simples[usize::from(idx)];
-                let successors = nexts.codes.iter().zip(nexts.chars.iter())
+                let successors = nexts
+                    .codes
+                    .iter()
+                    .zip(nexts.chars.iter())
                     .take(usize::from(nexts.count));
                 for (&scode, &sch) in successors {
                     if sch == ch {
@@ -609,7 +614,7 @@ impl Tree {
                 }
 
                 None
-            },
+            }
             FullKey::Full(idx) => {
                 let full = &self.complex[usize::from(idx)];
                 let precode = full.char_continuation[usize::from(ch)];
@@ -618,7 +623,7 @@ impl Tree {
                 } else {
                     None
                 }
-            },
+            }
         }
     }
 
@@ -726,16 +731,24 @@ mod tests {
         encoder.finish();
         // We require simulation of normality, that is byte-for-byte compression.
         let result = encoder.encode_bytes(input, target);
-        assert!(if let Err(LzwError::InvalidCode) = result.status { true } else { false });
+        assert!(if let Err(LzwError::InvalidCode) = result.status {
+            true
+        } else {
+            false
+        });
         assert_eq!(result.consumed_in, 1);
 
         let fixed = encoder.encode_bytes(&[1, 0], &mut target[result.consumed_out..]);
-        assert!(if let Ok(LzwStatus::Done) = fixed.status { true } else { false });
+        assert!(if let Ok(LzwStatus::Done) = fixed.status {
+            true
+        } else {
+            false
+        });
         assert_eq!(fixed.consumed_in, 2);
 
         // Okay, now test we actually fixed it.
         let ref mut compare = [0u8; 4];
-        let mut todo = &target[..result.consumed_out+fixed.consumed_out];
+        let mut todo = &target[..result.consumed_out + fixed.consumed_out];
         let mut free = &mut compare[..];
         let mut decoder = Decoder::new(BitOrder::Msb, BIT_LEN);
 
@@ -751,7 +764,7 @@ mod tests {
             free = &mut free[result.consumed_out..];
         }
 
-        let remaining = {free}.len();
+        let remaining = { free }.len();
         let len = compare.len() - remaining;
         assert_eq!(todo, &[]);
         assert_eq!(compare[..len], [0, 1, 0]);
