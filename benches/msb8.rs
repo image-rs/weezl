@@ -3,10 +3,7 @@ extern crate weezl;
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::fs;
-use weezl::{
-    decode::{Decoder, LzwStatus},
-    BitOrder,
-};
+use weezl::{decode::Decoder, BitOrder, LzwStatus};
 
 pub fn criterion_benchmark(c: &mut Criterion, file: &str) {
     let data = fs::read(file).expect("Benchmark input not found");
