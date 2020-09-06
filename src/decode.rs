@@ -1,7 +1,7 @@
 //! A module for all decoding needs.
 #[cfg(feature = "std")]
 use crate::error::StreamResult;
-use crate::error::{BufferResult, LzwError, LzwStatus};
+use crate::error::{BufferResult, LzwError, LzwStatus, VectorResult};
 use crate::{BitOrder, Code, StreamBuf, MAX_CODESIZE, MAX_ENTRIES, STREAM_BUF_SIZE};
 
 use crate::alloc::{boxed::Box, vec, vec::Vec};
@@ -414,12 +414,12 @@ impl IntoVec<'_> {
     /// Decode data from a reader.
     ///
     /// This will read data until the stream is empty or an end marker is reached.
-    pub fn decode(&mut self, read:  &[u8]) -> BufferResult {
+    pub fn decode(&mut self, read:  &[u8]) -> VectorResult {
         self.decode_part(read, false)
     }
 
     /// Decode data from a reader, requiring an end marker.
-    pub fn decode_all(mut self, read: &[u8]) -> BufferResult {
+    pub fn decode_all(mut self, read: &[u8]) -> VectorResult {
         self.decode_part(read, true)
     }
 
@@ -435,8 +435,8 @@ impl IntoVec<'_> {
         (&mut self.vector[length..], decoder)
     }
 
-    fn decode_part(&mut self, part: &[u8], must_finish: bool) -> BufferResult {
-        let mut result = BufferResult {
+    fn decode_part(&mut self, part: &[u8], must_finish: bool) -> VectorResult {
+        let mut result = VectorResult {
             consumed_in: 0,
             consumed_out: 0,
             status: Ok(LzwStatus::Ok),

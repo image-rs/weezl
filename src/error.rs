@@ -9,6 +9,17 @@ pub struct BufferResult {
     pub status: Result<LzwStatus, LzwError>,
 }
 
+/// The result of a coding operation into a vector.
+#[must_use = "Contains a status with potential error information"]
+pub struct VectorResult {
+    /// The number of bytes consumed from the input buffer.
+    pub consumed_in: usize,
+    /// The number of bytes written into the output buffer.
+    pub consumed_out: usize,
+    /// The status after returning from the write call.
+    pub status: Result<LzwStatus, LzwError>,
+}
+
 /// The result of coding into an output stream.
 #[cfg(feature = "std")]
 #[must_use = "Contains a status with potential error information"]
