@@ -47,6 +47,16 @@ pub struct IntoAsync<'d, W> {
     default_size: usize,
 }
 
+/// A decoding sink into a vector.
+///
+/// See [`Decoder::into_vec`] on how to create this type.
+///
+/// [`Decoder::into_vec`]: struct.Decoder.html#method.into_vec
+pub struct IntoVec<'d> {
+    decoder: &'d mut Decoder,
+    vector: &'d mut Vec<u8>,
+}
+
 trait Stateful {
     fn advance(&mut self, inp: &[u8], out: &mut [u8]) -> BufferResult;
     fn has_ended(&self) -> bool;
@@ -223,6 +233,17 @@ impl Decoder {
         }
     }
 
+    /// Construct a decoder into a vector.
+    ///
+    /// All decoded data is appended and the vector is __not__ cleared.
+    ///
+    /// Compared to `into_stream` this interface allows a high-level access to decoding without
+    /// requires the `std`-feature. Also, it can make full use of the extra buffer control that the
+    /// special target exposes.
+    pub fn into_vec<'lt>(&'lt mut self, vec: &'lt mut Vec<u8>) -> IntoVec<'lt> {
+        IntoVec { decoder: self, vector: vec }
+    }
+
     /// Check if the decoding has finished.
     ///
     /// No more output is produced beyond the end code that marked the finish of the stream. The
@@ -386,6 +407,93 @@ impl<'d, W: Write> IntoStream<'d, W> {
             bytes_written,
             status,
         }
+    }
+}
+
+impl IntoVec<'_> {
+    /// Decode data from a reader.
+    ///
+    /// This will read data until the stream is empty or an end marker is reached.
+    pub fn decode(&mut self, read:  &[u8]) -> BufferResult {
+        self.decode_part(read, false)
+    }
+
+    /// Decode data from a reader, requiring an end marker.
+    pub fn decode_all(mut self, read: &[u8]) -> BufferResult {
+        self.decode_part(read, true)
+    }
+
+    fn grab_buffer(&mut self) -> (&mut [u8], &mut Decoder) {
+        const CHUNK_SIZE: usize = 1 << 12;
+        let decoder = &mut self.decoder;
+        let length = self.vector.len();
+
+        // Use the vector to do overflow checks and w/e.
+        self.vector.reserve(CHUNK_SIZE);
+        self.vector.resize(length + CHUNK_SIZE, 0u8);
+
+        (&mut self.vector[length..], decoder)
+    }
+
+    fn decode_part(&mut self, part: &[u8], must_finish: bool) -> BufferResult {
+        let mut result = BufferResult {
+            consumed_in: 0,
+            consumed_out: 0,
+            status: Ok(LzwStatus::Ok),
+        };
+
+        enum Progress {
+            Ok,
+            Done,
+        }
+
+        // Converting to mutable refs to move into the `once` closure.
+        let read_bytes = &mut result.consumed_in;
+        let write_bytes = &mut result.consumed_out;
+        let mut data = part;
+
+        // A 64 MB buffer is quite large but should get alloc_zeroed.
+        // Note that the decoded size can be up to quadratic in code block.
+        let once = move || {
+            // Grab a new output buffer.
+            let (outbuf, decoder) = self.grab_buffer();
+
+            // Decode as much of the buffer as fits.
+            let result = decoder.decode_bytes(data, &mut outbuf[..]);
+            // Do the bookkeeping and consume the buffer.
+            *read_bytes += result.consumed_in;
+            *write_bytes += result.consumed_out;
+            data = &data[result.consumed_in..];
+
+            let unfilled = outbuf.len() - result.consumed_out;
+            let filled = self.vector.len() - unfilled;
+            self.vector.truncate(filled);
+
+            // Handle the status in the result.
+            match result.status {
+                Err(err) => Err(err),
+                Ok(LzwStatus::NoProgress) if must_finish => Err(LzwError::InvalidCode),
+                Ok(LzwStatus::NoProgress) | Ok(LzwStatus::Done) => Ok(Progress::Done),
+                Ok(LzwStatus::Ok) => Ok(Progress::Ok),
+            }
+        };
+
+        // Decode chunks of input data until we're done.
+        let status: Result<(), _> = core::iter::repeat_with(once)
+            // scan+fuse can be replaced with map_while
+            .scan((), |(), result| match result {
+                Ok(Progress::Ok) => Some(Ok(())),
+                Err(err) => Some(Err(err)),
+                Ok(Progress::Done) => None,
+            })
+            .fuse()
+            .collect();
+
+        if let Err(err) = status {
+            result.status = Err(err);
+        }
+
+        result
     }
 }
 
