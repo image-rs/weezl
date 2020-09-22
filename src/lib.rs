@@ -66,3 +66,29 @@ mod error;
 #[cfg(feature = "std")]
 pub use self::error::StreamResult;
 pub use self::error::{BufferResult, LzwError, LzwStatus};
+
+#[cfg(all(test, feature = "alloc"))]
+mod tests {
+    use crate::decode::Decoder;
+    use crate::encode::Encoder;
+
+    #[cfg(feature = "std")]
+    use crate::{decode, encode};
+
+    #[test]
+    fn stable_send() {
+        fn must_be_send<T: Send + 'static>() {}
+        must_be_send::<Decoder>();
+        must_be_send::<Encoder>();
+
+        #[cfg(feature = "std")]
+        fn _send_and_lt<'lt, T: Send + 'lt>() {}
+
+        // Check that the inference `W: Send + 'd` => `IntoStream: Send + 'd` works.
+        #[cfg(feature = "std")]
+        fn _all_send_writer<'d, W: std::io::Write + Send + 'd>() {
+            _send_and_lt::<'d, decode::IntoStream<'d, W>>();
+            _send_and_lt::<'d, encode::IntoStream<'d, W>>();
+        }
+    }
+}
