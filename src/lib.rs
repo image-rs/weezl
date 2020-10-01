@@ -49,12 +49,26 @@ pub(crate) const MAX_ENTRIES: usize = 1 << MAX_CODESIZE as usize;
 /// Alias for a LZW code point
 pub(crate) type Code = u16;
 
+/// A default buffer size for encoding/decoding buffer.
+///
+/// Note that this is larger than the default size for buffers (usually 4K) since each code word
+/// can expand to multiple bytes. Expanding one buffer would yield multiple and require a costly
+/// break in the decoding loop. Note that the decoded size can be up to quadratic in code block.
+pub(crate) const STREAM_BUF_SIZE: usize = 1 << 24;
+
 /// The order of bits in bytes.
 pub enum BitOrder {
     /// The most significant bit is processed first.
     Msb,
     /// The least significant bit is processed first.
     Lsb,
+}
+
+/// An owned or borrowed buffer for stream operations.
+#[cfg(feature = "alloc")]
+pub(crate) enum StreamBuf<'d> {
+    Borrowed(&'d mut [u8]),
+    Owned(crate::alloc::vec::Vec<u8>),
 }
 
 #[cfg(feature = "alloc")]
