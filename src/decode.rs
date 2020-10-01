@@ -2,7 +2,7 @@
 #[cfg(feature = "std")]
 use crate::error::StreamResult;
 use crate::error::{BufferResult, LzwError, LzwStatus};
-use crate::{BitOrder, Code, MAX_CODESIZE, MAX_ENTRIES, STREAM_BUF_SIZE};
+use crate::{BitOrder, Code, StreamBuf, MAX_CODESIZE, MAX_ENTRIES, STREAM_BUF_SIZE};
 
 use crate::alloc::{boxed::Box, vec, vec::Vec};
 #[cfg(feature = "std")]
@@ -27,11 +27,6 @@ pub struct IntoStream<'d, W> {
     writer: W,
     buffer: Option<StreamBuf<'d>>,
     default_size: usize,
-}
-
-enum StreamBuf<'d> {
-    Borrowed(&'d mut [u8]),
-    Owned(Vec<u8>),
 }
 
 trait Stateful {
@@ -1020,7 +1015,7 @@ impl Link {
 #[cfg(test)]
 mod tests {
     #[cfg(feature = "std")]
-    use super::StreamBuf;
+    use crate::StreamBuf;
     use crate::{decode, BitOrder};
 
     fn make_encoded() -> Vec<u8> {

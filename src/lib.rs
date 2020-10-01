@@ -64,6 +64,13 @@ pub enum BitOrder {
     Lsb,
 }
 
+/// An owned or borrowed buffer for stream operations.
+#[cfg(feature = "alloc")]
+pub(crate) enum StreamBuf<'d> {
+    Borrowed(&'d mut [u8]),
+    Owned(crate::alloc::vec::Vec<u8>),
+}
+
 #[cfg(feature = "alloc")]
 pub mod decode;
 #[cfg(feature = "alloc")]

@@ -1,6 +1,6 @@
 //! A module for all encoding needs.
 use crate::error::{BufferResult, LzwError, LzwStatus};
-use crate::{BitOrder, Code, MAX_CODESIZE, MAX_ENTRIES};
+use crate::{BitOrder, Code, StreamBuf, MAX_CODESIZE, MAX_ENTRIES, STREAM_BUF_SIZE};
 
 use crate::alloc::{boxed::Box, vec::Vec};
 #[cfg(feature = "std")]
@@ -28,6 +28,8 @@ pub struct Encoder {
 pub struct IntoStream<'d, W> {
     encoder: &'d mut Encoder,
     writer: W,
+    buffer: Option<StreamBuf<'d>>,
+    default_size: usize,
 }
 
 trait Stateful {
@@ -189,6 +191,8 @@ impl Encoder {
         IntoStream {
             encoder: self,
             writer,
+            buffer: None,
+            default_size: STREAM_BUF_SIZE,
         }
     }
 
@@ -221,7 +225,7 @@ impl Encoder {
 }
 
 #[cfg(feature = "std")]
-impl<W: Write> IntoStream<'_, W> {
+impl<'d, W: Write> IntoStream<'d, W> {
     /// Encode data from a reader.
     ///
     /// This will drain the supplied reader. It will not encode an end marker after all data has
@@ -235,8 +239,40 @@ impl<W: Write> IntoStream<'_, W> {
         self.encode_part(read, true)
     }
 
+    /// Set the size of the intermediate encode buffer.
+    ///
+    /// A buffer of this size is allocated to hold one part of the encoded stream when no buffer is
+    /// available and any encoding method is called. No buffer is allocated if `set_buffer` has
+    /// been called. The buffer is reused.
+    ///
+    /// # Panics
+    /// This method panics if `size` is `0`.
+    pub fn set_buffer_size(&mut self, size: usize) {
+        assert_ne!(size, 0, "Attempted to set empty buffer");
+        self.default_size = size;
+    }
+
+    /// Use a particular buffer as an intermediate encode buffer.
+    ///
+    /// Calling this sets or replaces the buffer. When a buffer has been set then it is used
+    /// instead of a dynamically allocating a buffer. Note that the size of the buffer is relevant
+    /// for efficient encoding as there is additional overhead from `write` calls each time the
+    /// buffer has been filled.
+    ///
+    /// # Panics
+    /// This method panics if the `buffer` is empty.
+    pub fn set_buffer(&mut self, buffer: &'d mut [u8]) {
+        assert_ne!(buffer.len(), 0, "Attempted to set empty buffer");
+        self.buffer = Some(StreamBuf::Borrowed(buffer));
+    }
+
     fn encode_part(&mut self, mut read: impl BufRead, finish: bool) -> StreamResult {
-        let IntoStream { encoder, writer } = self;
+        let IntoStream {
+            encoder,
+            writer,
+            buffer,
+            default_size,
+        } = self;
         enum Progress {
             Ok,
             Done,
@@ -248,7 +284,13 @@ impl<W: Write> IntoStream<'_, W> {
         let read_bytes = &mut bytes_read;
         let write_bytes = &mut bytes_written;
 
-        let mut outbuf = vec![0; 1 << 26];
+        let outbuf: &mut [u8] =
+            match { buffer.get_or_insert_with(|| StreamBuf::Owned(vec![0u8; *default_size])) } {
+                StreamBuf::Borrowed(slice) => &mut *slice,
+                StreamBuf::Owned(vec) => &mut *vec,
+            };
+        assert!(!outbuf.is_empty());
+
         let once = move || {
             let data = read.fill_buf()?;
 
@@ -720,6 +762,8 @@ impl From<FullKey> for CompressedKey {
 mod tests {
     use super::{BitOrder, Encoder, LzwError, LzwStatus};
     use crate::decode::Decoder;
+    #[cfg(feature = "std")]
+    use crate::StreamBuf;
 
     #[test]
     fn invalid_input_rejected() {
@@ -768,5 +812,61 @@ mod tests {
         let len = compare.len() - remaining;
         assert_eq!(todo, &[]);
         assert_eq!(compare[..len], [0, 1, 0]);
+    }
+
+    fn make_decoded() -> Vec<u8> {
+        const FILE: &'static [u8] =
+            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.lock"));
+        return FILE.to_owned();
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn into_stream_buffer_no_alloc() {
+        let encoded = make_decoded();
+        let mut decoder = Encoder::new(BitOrder::Msb, 8);
+
+        let mut output = vec![];
+        let mut buffer = [0; 512];
+        let mut istream = decoder.into_stream(&mut output);
+        istream.set_buffer(&mut buffer[..]);
+        istream.encode(&encoded[..]).status.unwrap();
+
+        match istream.buffer {
+            Some(StreamBuf::Borrowed(_)) => {}
+            None => panic!("Decoded without buffer??"),
+            Some(StreamBuf::Owned(_)) => panic!("Unexpected buffer allocation"),
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn into_stream_buffer_small_alloc() {
+        struct WriteTap<W: std::io::Write>(W);
+        const BUF_SIZE: usize = 512;
+
+        impl<W: std::io::Write> std::io::Write for WriteTap<W> {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                assert!(buf.len() <= BUF_SIZE);
+                self.0.write(buf)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                self.0.flush()
+            }
+        }
+
+        let encoded = make_decoded();
+        let mut decoder = Encoder::new(BitOrder::Msb, 8);
+
+        let mut output = vec![];
+        let mut istream = decoder.into_stream(WriteTap(&mut output));
+        istream.set_buffer_size(512);
+        istream.encode(&encoded[..]).status.unwrap();
+
+        match istream.buffer {
+            Some(StreamBuf::Owned(vec)) => assert!(vec.len() <= BUF_SIZE),
+            Some(StreamBuf::Borrowed(_)) => panic!("Unexpected borrowed buffer, where from?"),
+            None => panic!("Decoded without buffer??"),
+        }
     }
 }
