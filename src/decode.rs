@@ -1014,6 +1014,7 @@ impl Link {
 
 #[cfg(test)]
 mod tests {
+    use crate::alloc::vec::Vec;
     #[cfg(feature = "std")]
     use crate::StreamBuf;
     use crate::{decode, BitOrder};
@@ -1023,7 +1024,7 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/benches/binary-8-msb.lzw"
         ));
-        return FILE.to_owned();
+        return Vec::from(FILE);
     }
 
     #[test]

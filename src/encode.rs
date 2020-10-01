@@ -761,6 +761,7 @@ impl From<FullKey> for CompressedKey {
 #[cfg(test)]
 mod tests {
     use super::{BitOrder, Encoder, LzwError, LzwStatus};
+    use crate::alloc::vec::Vec;
     use crate::decode::Decoder;
     #[cfg(feature = "std")]
     use crate::StreamBuf;
@@ -817,7 +818,7 @@ mod tests {
     fn make_decoded() -> Vec<u8> {
         const FILE: &'static [u8] =
             include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.lock"));
-        return FILE.to_owned();
+        return Vec::from(FILE);
     }
 
     #[test]
