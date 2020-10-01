@@ -25,6 +25,11 @@ pub struct Encoder {
 /// See [`Encoder::into_stream`] on how to create this type.
 ///
 /// [`Encoder::into_stream`]: struct.Encoder.html#method.into_stream
+#[cfg_attr(
+    not(feature = "std"),
+    deprecated = "This type is only useful with the `std` feature."
+)]
+#[cfg_attr(not(feature = "std"), allow(dead_code))]
 pub struct IntoStream<'d, W> {
     encoder: &'d mut Encoder,
     writer: W,
