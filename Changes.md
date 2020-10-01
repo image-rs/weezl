@@ -1,3 +1,11 @@
+## Version 0.1.1 
+
+- The `IntoStream` types now reuse their internal buffers.
+- Added the methods `set_buffer`, `set_buffer_size` to `IntoStream` for both
+  the encoder and decoder, used to control the automatic allocation.
+- Deprecated `IntoStream` in configurations without the `std` feature where the
+  type can't even be constructed.
+
 ## Version 0.1.0 – Aleph
 
 - Initial major release
