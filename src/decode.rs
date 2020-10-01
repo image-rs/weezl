@@ -2,7 +2,7 @@
 #[cfg(feature = "std")]
 use crate::error::StreamResult;
 use crate::error::{BufferResult, LzwError, LzwStatus};
-use crate::{BitOrder, Code, MAX_CODESIZE, MAX_ENTRIES};
+use crate::{BitOrder, Code, MAX_CODESIZE, MAX_ENTRIES, STREAM_BUF_SIZE};
 
 use crate::alloc::{boxed::Box, vec, vec::Vec};
 #[cfg(feature = "std")]
@@ -25,6 +25,13 @@ pub struct Decoder {
 pub struct IntoStream<'d, W> {
     decoder: &'d mut Decoder,
     writer: W,
+    buffer: Option<StreamBuf<'d>>,
+    default_size: usize,
+}
+
+enum StreamBuf<'d> {
+    Borrowed(&'d mut [u8]),
+    Owned(Vec<u8>),
 }
 
 trait Stateful {
@@ -177,6 +184,8 @@ impl Decoder {
         IntoStream {
             decoder: self,
             writer,
+            buffer: None,
+            default_size: STREAM_BUF_SIZE,
         }
     }
 
@@ -213,7 +222,7 @@ impl Decoder {
 }
 
 #[cfg(feature = "std")]
-impl<W: Write> IntoStream<'_, W> {
+impl<'d, W: Write> IntoStream<'d, W> {
     /// Decode data from a reader.
     ///
     /// This will read data until the stream is empty or an end marker is reached.
@@ -226,8 +235,42 @@ impl<W: Write> IntoStream<'_, W> {
         self.decode_part(read, true)
     }
 
+    /// Set the size of the intermediate decode buffer.
+    ///
+    /// A buffer of this size is allocated to hold one part of the decoded stream when no buffer is
+    /// available and any decoding method is called. No buffer is allocated if `set_buffer` has
+    /// been called. The buffer is reused.
+    ///
+    /// # Panics
+    /// This method panics if `size` is `0`.
+    pub fn set_buffer_size(&mut self, size: usize) {
+        assert_ne!(size, 0, "Attempted to set empty buffer");
+        self.default_size = size;
+    }
+
+    /// Use a particular buffer as an intermediate decode buffer.
+    ///
+    /// Calling this sets or replaces the buffer. When a buffer has been set then it is used
+    /// instead of dynamically allocating a buffer. Note that the size of the buffer is critical
+    /// for efficient decoding. Some optimization techniques require the buffer to hold one or more
+    /// previous decoded words. There is also additional overhead from `write` calls each time the
+    /// buffer has been filled.
+    ///
+    /// # Panics
+    /// This method panics if the `buffer` is empty.
+    pub fn set_buffer(&mut self, buffer: &'d mut [u8]) {
+        assert_ne!(buffer.len(), 0, "Attempted to set empty buffer");
+        self.buffer = Some(StreamBuf::Borrowed(buffer));
+    }
+
     fn decode_part(&mut self, mut read: impl BufRead, must_finish: bool) -> StreamResult {
-        let IntoStream { decoder, writer } = self;
+        let IntoStream {
+            decoder,
+            writer,
+            buffer,
+            default_size,
+        } = self;
+
         enum Progress {
             Ok,
             Done,
@@ -240,9 +283,13 @@ impl<W: Write> IntoStream<'_, W> {
         let read_bytes = &mut bytes_read;
         let write_bytes = &mut bytes_written;
 
-        // A 64 MB buffer is quite large but should get alloc_zeroed.
-        // Note that the decoded size can be up to quadratic in code block.
-        let mut outbuf = vec![0; 1 << 26];
+        let outbuf: &mut [u8] =
+            match { buffer.get_or_insert_with(|| StreamBuf::Owned(vec![0u8; *default_size])) } {
+                StreamBuf::Borrowed(slice) => &mut *slice,
+                StreamBuf::Owned(vec) => &mut *vec,
+            };
+        assert!(!outbuf.is_empty());
+
         let once = move || {
             // Try to grab one buffer of input data.
             let data = read.fill_buf()?;
@@ -744,7 +791,6 @@ impl CodeBuffer for MsbBuffer {
     }
 
     fn refill_bits(&mut self, inp: &mut &[u8]) {
-        // TODO: handle lsb?
         let wish_count = (64 - self.bits) / 8;
         let mut buffer = [0u8; 8];
         let new_bits = match inp.get(..usize::from(wish_count)) {
@@ -968,5 +1014,70 @@ impl Link {
     // optimization. However, that has no practical purpose right now.
     fn derive(&self, byte: u8, prev: Code) -> Self {
         Link { prev, byte }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(feature = "std")]
+    use super::StreamBuf;
+    use crate::{decode, BitOrder};
+
+    fn make_encoded() -> Vec<u8> {
+        const FILE: &'static [u8] = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/benches/binary-8-msb.lzw"
+        ));
+        return FILE.to_owned();
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn into_stream_buffer_no_alloc() {
+        let encoded = make_encoded();
+        let mut decoder = decode::Decoder::new(BitOrder::Msb, 8);
+
+        let mut output = vec![];
+        let mut buffer = [0; 512];
+        let mut istream = decoder.into_stream(&mut output);
+        istream.set_buffer(&mut buffer[..]);
+        istream.decode(&encoded[..]).status.unwrap();
+
+        match istream.buffer {
+            Some(StreamBuf::Borrowed(_)) => {}
+            None => panic!("Decoded without buffer??"),
+            Some(StreamBuf::Owned(_)) => panic!("Unexpected buffer allocation"),
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn into_stream_buffer_small_alloc() {
+        struct WriteTap<W: std::io::Write>(W);
+        const BUF_SIZE: usize = 512;
+
+        impl<W: std::io::Write> std::io::Write for WriteTap<W> {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                assert!(buf.len() <= BUF_SIZE);
+                self.0.write(buf)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                self.0.flush()
+            }
+        }
+
+        let encoded = make_encoded();
+        let mut decoder = decode::Decoder::new(BitOrder::Msb, 8);
+
+        let mut output = vec![];
+        let mut istream = decoder.into_stream(WriteTap(&mut output));
+        istream.set_buffer_size(512);
+        istream.decode(&encoded[..]).status.unwrap();
+
+        match istream.buffer {
+            Some(StreamBuf::Owned(vec)) => assert!(vec.len() <= BUF_SIZE),
+            Some(StreamBuf::Borrowed(_)) => panic!("Unexpected borrowed buffer, where from?"),
+            None => panic!("Decoded without buffer??"),
+        }
     }
 }
