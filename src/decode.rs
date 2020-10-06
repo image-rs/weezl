@@ -658,7 +658,7 @@ impl<C: CodeBuffer> Stateful for DecodeState<C> {
                         self.buffer.read_mark = last.len();
                     }
 
-                    cha = self.buffer.fill_fast();
+                    cha = self.buffer.fill_cscsc();
                 } else {
                     // Restore the decoded word into the buffer.
                     last_decoded = None;
@@ -907,7 +907,11 @@ impl Buffer {
         }
     }
 
-    fn fill_fast(&mut self) -> u8 {
+    /// When encoding a sequence `cScSc` where `c` is any character and `S` is any string
+    /// this results in two codes `AB`, `A` encoding `cS` and `B` encoding `cSc`. Supposing
+    /// the buffer is already filled with the reconstruction of `A`, we can easily fill it
+    /// with the reconstruction of `B`.
+    fn fill_cscsc(&mut self) -> u8 {
         self.bytes[self.write_mark] = self.bytes[0];
         self.write_mark += 1;
         self.read_mark = 0;
