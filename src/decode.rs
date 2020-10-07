@@ -484,7 +484,7 @@ impl<C: CodeBuffer> Stateful for DecodeState<C> {
                             status = Err(LzwError::InvalidCode);
                         } else {
                             // Reconstruct the first code in the buffer.
-                            self.buffer.reconstruct_low(&self.table, init_code);
+                            self.buffer.fill_reconstruct(&self.table, init_code);
                             let link = self.table.at(init_code).clone();
                             code_link = Some((init_code, link));
                         }
@@ -602,7 +602,7 @@ impl<C: CodeBuffer> Stateful for DecodeState<C> {
 
             // The very tight loop for restoring the actual burst.
             for (&burst, target) in burst.iter().zip(&mut target[..burst_size - 1]) {
-                let cha = self.buffer.reconstruct_direct(&self.table, burst, target);
+                let cha = self.table.reconstruct(burst, target);
                 // TODO: this pushes into a Vec, maybe we can make this cleaner.
                 // Theoretically this has a branch and llvm tends to be flaky with code layout for
                 // the case of requiring an allocation (which can't occur in practice).
@@ -658,11 +658,11 @@ impl<C: CodeBuffer> Stateful for DecodeState<C> {
                         self.buffer.read_mark = last.len();
                     }
 
-                    cha = self.buffer.reconstruct_high();
+                    cha = self.buffer.fill_cscsc();
                 } else {
                     // Restore the decoded word into the buffer.
                     last_decoded = None;
-                    cha = self.buffer.reconstruct_low(&self.table, new_code);
+                    cha = self.buffer.fill_reconstruct(&self.table, new_code);
                 }
             } else {
                 is_in_buffer = false;
@@ -679,9 +679,7 @@ impl<C: CodeBuffer> Stateful for DecodeState<C> {
                     target[..source.len()].copy_from_slice(source);
                     target[source.len()..][0] = source[0];
                 } else {
-                    cha = self
-                        .buffer
-                        .reconstruct_direct(&self.table, new_code, target);
+                    cha = self.table.reconstruct(new_code, target);
                 }
 
                 // A new decoded word.
@@ -909,41 +907,30 @@ impl Buffer {
         }
     }
 
-    fn reconstruct_high(&mut self) -> u8 {
+    /// When encoding a sequence `cScSc` where `c` is any character and `S` is any string
+    /// this results in two codes `AB`, `A` encoding `cS` and `B` encoding `cSc`. Supposing
+    /// the buffer is already filled with the reconstruction of `A`, we can easily fill it
+    /// with the reconstruction of `B`.
+    fn fill_cscsc(&mut self) -> u8 {
         self.bytes[self.write_mark] = self.bytes[0];
         self.write_mark += 1;
         self.read_mark = 0;
         self.bytes[0]
     }
 
-    fn reconstruct_low(&mut self, table: &Table, code: Code) -> u8 {
+    // Fill the buffer by decoding from the table
+    fn fill_reconstruct(&mut self, table: &Table, code: Code) -> u8 {
         self.write_mark = 0;
         self.read_mark = 0;
         let depth = table.depths[usize::from(code)];
         let mut memory = core::mem::replace(&mut self.bytes, Box::default());
 
         let out = &mut memory[..usize::from(depth)];
-        let last = self.reconstruct_direct(table, code, out);
+        let last = table.reconstruct(code, out);
 
         self.bytes = memory;
         self.write_mark = usize::from(depth);
         last
-    }
-
-    fn reconstruct_direct(&mut self, table: &Table, code: Code, out: &mut [u8]) -> u8 {
-        let mut code_iter = code;
-        let table = &table.inner[..=usize::from(code)];
-        let len = code_iter;
-        for ch in out.iter_mut().rev() {
-            //(code, cha) = self.table[k as usize];
-            // Note: This could possibly be replaced with an unchecked array access if
-            //  - value is asserted to be < self.next_code() in push
-            //  - min_size is asserted to be < MAX_CODESIZE
-            let entry = &table[usize::from(code_iter)];
-            code_iter = core::cmp::min(len, entry.prev);
-            *ch = entry.byte;
-        }
-        out[0]
     }
 
     fn buffer(&self) -> &[u8] {
@@ -1002,6 +989,22 @@ impl Table {
         self.inner.push(link.clone());
         self.depths.push(depth);
         link
+    }
+
+    fn reconstruct(&self, code: Code, out: &mut [u8]) -> u8 {
+        let mut code_iter = code;
+        let table = &self.inner[..=usize::from(code)];
+        let len = code_iter;
+        for ch in out.iter_mut().rev() {
+            //(code, cha) = self.table[k as usize];
+            // Note: This could possibly be replaced with an unchecked array access if
+            //  - value is asserted to be < self.next_code() in push
+            //  - min_size is asserted to be < MAX_CODESIZE
+            let entry = &table[usize::from(code_iter)];
+            code_iter = core::cmp::min(len, entry.prev);
+            *ch = entry.byte;
+        }
+        out[0]
     }
 }
 
