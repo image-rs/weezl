@@ -1,3 +1,7 @@
+## Version 0.1.2
+
+- Fixes incorrect compression after `Encoder::reset`.
+
 ## Version 0.1.1 
 
 - The `IntoStream` types now reuse their internal buffers.
