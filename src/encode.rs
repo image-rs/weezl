@@ -509,6 +509,8 @@ impl Buffer for MsbBuffer {
 
     fn reset(&mut self, min_size: u8) {
         self.code_size = min_size + 1;
+        self.buffer = 0;
+        self.bits_in_buffer = 0;
     }
 
     fn buffer_code(&mut self, code: Code) {
@@ -569,6 +571,8 @@ impl Buffer for LsbBuffer {
 
     fn reset(&mut self, min_size: u8) {
         self.code_size = min_size + 1;
+        self.buffer = 0;
+        self.bits_in_buffer = 0;
     }
 
     fn buffer_code(&mut self, code: Code) {
@@ -635,12 +639,14 @@ impl Tree {
 
     fn reset(&mut self, min_size: u8) {
         self.simples.clear();
+        self.keys.truncate((1 << min_size) + 2);
         // Keep entry for clear code.
         self.complex.truncate(1);
-        self.keys.truncate((1 << min_size) + 2);
+        // The first complex is not changed..
         for k in self.keys[..(1 << min_size) + 2].iter_mut() {
             *k = FullKey::NoSuccessor.into();
         }
+        self.keys[1 << min_size] = FullKey::Full(0).into();
     }
 
     fn at_key(&self, code: Code, ch: u8) -> Option<Code> {
@@ -830,11 +836,11 @@ mod tests {
     #[cfg(feature = "std")]
     fn into_stream_buffer_no_alloc() {
         let encoded = make_decoded();
-        let mut decoder = Encoder::new(BitOrder::Msb, 8);
+        let mut encoder = Encoder::new(BitOrder::Msb, 8);
 
         let mut output = vec![];
         let mut buffer = [0; 512];
-        let mut istream = decoder.into_stream(&mut output);
+        let mut istream = encoder.into_stream(&mut output);
         istream.set_buffer(&mut buffer[..]);
         istream.encode(&encoded[..]).status.unwrap();
 
@@ -862,10 +868,10 @@ mod tests {
         }
 
         let encoded = make_decoded();
-        let mut decoder = Encoder::new(BitOrder::Msb, 8);
+        let mut encoder = Encoder::new(BitOrder::Msb, 8);
 
         let mut output = vec![];
-        let mut istream = decoder.into_stream(WriteTap(&mut output));
+        let mut istream = encoder.into_stream(WriteTap(&mut output));
         istream.set_buffer_size(512);
         istream.encode(&encoded[..]).status.unwrap();
 
@@ -873,6 +879,29 @@ mod tests {
             Some(StreamBuf::Owned(vec)) => assert!(vec.len() <= BUF_SIZE),
             Some(StreamBuf::Borrowed(_)) => panic!("Unexpected borrowed buffer, where from?"),
             None => panic!("Decoded without buffer??"),
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn reset() {
+        let encoded = make_decoded();
+        let mut encoder = Encoder::new(BitOrder::Msb, 8);
+        let mut reference = None;
+
+        for _ in 0..2 {
+            let mut output = vec![];
+            let mut buffer = [0; 512];
+            let mut istream = encoder.into_stream(&mut output);
+            istream.set_buffer(&mut buffer[..]);
+            istream.encode_all(&encoded[..]).status.unwrap();
+
+            encoder.reset();
+            if let Some(reference) = &reference {
+                assert_eq!(output, *reference);
+            } else {
+                reference = Some(output);
+            }
         }
     }
 }

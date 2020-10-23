@@ -1084,4 +1084,27 @@ mod tests {
             None => panic!("Decoded without buffer??"),
         }
     }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn reset() {
+        let encoded = make_encoded();
+        let mut decoder = decode::Decoder::new(BitOrder::Msb, 8);
+        let mut reference = None;
+
+        for _ in 0..2 {
+            let mut output = vec![];
+            let mut buffer = [0; 512];
+            let mut istream = decoder.into_stream(&mut output);
+            istream.set_buffer(&mut buffer[..]);
+            istream.decode_all(&encoded[..]).status.unwrap();
+
+            decoder.reset();
+            if let Some(reference) = &reference {
+                assert_eq!(output, *reference);
+            } else {
+                reference = Some(output);
+            }
+        }
+    }
 }
