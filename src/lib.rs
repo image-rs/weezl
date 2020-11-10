@@ -75,7 +75,11 @@ pub(crate) enum StreamBuf<'d> {
 #[cold]
 fn assert_code_size(size: u8) {
     assert!(size >= 2, "Minimum code size 2 required, got {}", size);
-    assert!(size <= MAX_CODESIZE, "Maximum code size 12 required, got {}", size);
+    assert!(
+        size <= MAX_CODESIZE,
+        "Maximum code size 12 required, got {}",
+        size
+    );
 }
 
 #[cfg(feature = "alloc")]

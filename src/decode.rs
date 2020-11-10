@@ -1033,9 +1033,9 @@ impl Link {
 #[cfg(test)]
 mod tests {
     use crate::alloc::vec::Vec;
-    use crate::{decode::Decoder, BitOrder};
     #[cfg(feature = "std")]
     use crate::StreamBuf;
+    use crate::{decode::Decoder, BitOrder};
 
     #[test]
     #[should_panic]
