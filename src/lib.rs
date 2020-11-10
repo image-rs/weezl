@@ -57,6 +57,7 @@ pub(crate) type Code = u16;
 pub(crate) const STREAM_BUF_SIZE: usize = 1 << 24;
 
 /// The order of bits in bytes.
+#[derive(Clone, Copy, Debug)]
 pub enum BitOrder {
     /// The most significant bit is processed first.
     Msb,
@@ -69,6 +70,16 @@ pub enum BitOrder {
 pub(crate) enum StreamBuf<'d> {
     Borrowed(&'d mut [u8]),
     Owned(crate::alloc::vec::Vec<u8>),
+}
+
+#[cold]
+fn assert_code_size(size: u8) {
+    assert!(size >= 2, "Minimum code size 2 required, got {}", size);
+    assert!(
+        size <= MAX_CODESIZE,
+        "Maximum code size 12 required, got {}",
+        size
+    );
 }
 
 #[cfg(feature = "alloc")]

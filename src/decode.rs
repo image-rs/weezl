@@ -127,8 +127,13 @@ impl Decoder {
     /// The algorithm for dynamically increasing the code symbol bit width is compatible with the
     /// original specification. In particular you will need to specify an `Lsb` bit oder to decode
     /// the data portion of a compressed `gif` image.
+    ///
+    /// # Panics
+    ///
+    /// The `size` needs to be in the interval `2..=12`.
     pub fn new(order: BitOrder, size: u8) -> Self {
         type Boxed = Box<dyn Stateful + Send + 'static>;
+        super::assert_code_size(size);
         let state = match order {
             BitOrder::Lsb => Box::new(DecodeState::<LsbBuffer>::new(size)) as Boxed,
             BitOrder::Msb => Box::new(DecodeState::<MsbBuffer>::new(size)) as Boxed,
@@ -142,8 +147,13 @@ impl Decoder {
     /// The algorithm for dynamically increasing the code symbol bit width is compatible with the
     /// TIFF specification, which is a misinterpretation of the original algorithm for increasing
     /// the code size. It switches one symbol sooner.
+    ///
+    /// # Panics
+    ///
+    /// The `size` needs to be in the interval `2..=12`.
     pub fn with_tiff_size_switch(order: BitOrder, size: u8) -> Self {
         type Boxed = Box<dyn Stateful + Send + 'static>;
+        super::assert_code_size(size);
         let state = match order {
             BitOrder::Lsb => {
                 let mut state = Box::new(DecodeState::<LsbBuffer>::new(size));
@@ -1025,7 +1035,19 @@ mod tests {
     use crate::alloc::vec::Vec;
     #[cfg(feature = "std")]
     use crate::StreamBuf;
-    use crate::{decode, BitOrder};
+    use crate::{decode::Decoder, BitOrder};
+
+    #[test]
+    #[should_panic]
+    fn invalid_code_size_low() {
+        let _ = Decoder::new(BitOrder::Msb, 1);
+    }
+
+    #[test]
+    #[should_panic]
+    fn invalid_code_size_high() {
+        let _ = Decoder::new(BitOrder::Msb, 14);
+    }
 
     fn make_encoded() -> Vec<u8> {
         const FILE: &'static [u8] = include_bytes!(concat!(
@@ -1039,7 +1061,7 @@ mod tests {
     #[cfg(feature = "std")]
     fn into_stream_buffer_no_alloc() {
         let encoded = make_encoded();
-        let mut decoder = decode::Decoder::new(BitOrder::Msb, 8);
+        let mut decoder = Decoder::new(BitOrder::Msb, 8);
 
         let mut output = vec![];
         let mut buffer = [0; 512];
@@ -1071,7 +1093,7 @@ mod tests {
         }
 
         let encoded = make_encoded();
-        let mut decoder = decode::Decoder::new(BitOrder::Msb, 8);
+        let mut decoder = Decoder::new(BitOrder::Msb, 8);
 
         let mut output = vec![];
         let mut istream = decoder.into_stream(WriteTap(&mut output));
@@ -1089,7 +1111,7 @@ mod tests {
     #[cfg(feature = "std")]
     fn reset() {
         let encoded = make_encoded();
-        let mut decoder = decode::Decoder::new(BitOrder::Msb, 8);
+        let mut decoder = Decoder::new(BitOrder::Msb, 8);
         let mut reference = None;
 
         for _ in 0..2 {
