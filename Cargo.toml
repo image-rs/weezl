@@ -45,3 +45,7 @@ required-features = ["std"]
 [[example]]
 name = "lzw-decompress"
 required-features = ["std"]
+
+[[test]]
+name = "roundtrip"
+required-features = ["std"]
