@@ -72,6 +72,12 @@ pub(crate) enum StreamBuf<'d> {
     Owned(crate::alloc::vec::Vec<u8>),
 }
 
+#[cold]
+fn assert_code_size(size: u8) {
+    assert!(size >= 2, "Minimum code size 2 required, got {}", size);
+    assert!(size <= MAX_CODESIZE, "Maximum code size 12 required, got {}", size);
+}
+
 #[cfg(feature = "alloc")]
 pub mod decode;
 #[cfg(feature = "alloc")]

@@ -143,8 +143,13 @@ impl Encoder {
     /// The algorithm for dynamically increasing the code symbol bit width is compatible with the
     /// original specification. In particular you will need to specify an `Lsb` bit oder to encode
     /// the data portion of a compressed `gif` image.
+    ///
+    /// # Panics
+    ///
+    /// The `size` needs to be in the interval `2..=12`.
     pub fn new(order: BitOrder, size: u8) -> Self {
         type Boxed = Box<dyn Stateful + Send + 'static>;
+        super::assert_code_size(size);
         let state = match order {
             BitOrder::Lsb => Box::new(EncodeState::<LsbBuffer>::new(size)) as Boxed,
             BitOrder::Msb => Box::new(EncodeState::<MsbBuffer>::new(size)) as Boxed,
@@ -158,8 +163,13 @@ impl Encoder {
     /// The algorithm for dynamically increasing the code symbol bit width is compatible with the
     /// TIFF specification, which is a misinterpretation of the original algorithm for increasing
     /// the code size. It switches one symbol sooner.
+    ///
+    /// # Panics
+    ///
+    /// The `size` needs to be in the interval `2..=12`.
     pub fn with_tiff_size_switch(order: BitOrder, size: u8) -> Self {
         type Boxed = Box<dyn Stateful + Send + 'static>;
+        super::assert_code_size(size);
         let state = match order {
             BitOrder::Lsb => {
                 let mut state = Box::new(EncodeState::<LsbBuffer>::new(size));
@@ -834,6 +844,18 @@ mod tests {
         let len = compare.len() - remaining;
         assert_eq!(todo, &[]);
         assert_eq!(compare[..len], [0, 1, 0]);
+    }
+
+    #[test]
+    #[should_panic]
+    fn invalid_code_size_low() {
+        let _ = Encoder::new(BitOrder::Msb, 1);
+    }
+
+    #[test]
+    #[should_panic]
+    fn invalid_code_size_high() {
+        let _ = Encoder::new(BitOrder::Msb, 14);
     }
 
     fn make_decoded() -> Vec<u8> {
