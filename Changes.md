@@ -1,3 +1,8 @@
+## Version 0.1.3
+
+- Fixes an issue in compression that caused some data to be lost around clear
+  codes. This could corrupt the data stream.
+
 ## Version 0.1.2
 
 - Fixes incorrect compression after `Encoder::reset`.
