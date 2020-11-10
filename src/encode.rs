@@ -85,6 +85,8 @@ trait Buffer {
     fn new(size: u8) -> Self;
     /// Reset the code size in the buffer.
     fn reset(&mut self, min_size: u8);
+    /// Apply effects of a Clear Code.
+    fn clear(&mut self, min_size: u8);
     /// Insert a code into the buffer.
     fn buffer_code(&mut self, code: Code);
     /// Push bytes if the buffer space is getting small.
@@ -440,7 +442,7 @@ impl<B: Buffer> Stateful for EncodeState<B> {
                     if self.tree.keys.len() > MAX_ENTRIES {
                         self.buffer_code(self.clear_code);
                         self.tree.reset(self.min_size);
-                        self.buffer.reset(self.min_size);
+                        self.buffer.clear(self.min_size);
                     }
                 }
             }
@@ -513,6 +515,10 @@ impl Buffer for MsbBuffer {
         self.bits_in_buffer = 0;
     }
 
+    fn clear(&mut self, min_size: u8) {
+        self.code_size = min_size + 1;
+    }
+
     fn buffer_code(&mut self, code: Code) {
         let shift = 64 - self.bits_in_buffer - self.code_size;
         self.buffer |= u64::from(code) << shift;
@@ -573,6 +579,10 @@ impl Buffer for LsbBuffer {
         self.code_size = min_size + 1;
         self.buffer = 0;
         self.bits_in_buffer = 0;
+    }
+
+    fn clear(&mut self, min_size: u8) {
+        self.code_size = min_size + 1;
     }
 
     fn buffer_code(&mut self, code: Code) {

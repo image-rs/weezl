@@ -57,7 +57,7 @@ pub(crate) type Code = u16;
 pub(crate) const STREAM_BUF_SIZE: usize = 1 << 24;
 
 /// The order of bits in bytes.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum BitOrder {
     /// The most significant bit is processed first.
     Msb,
