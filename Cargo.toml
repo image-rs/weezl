@@ -14,8 +14,22 @@ exclude = ["benches/*.lzw"]
 name = "weezl"
 bench = false
 
+[dependencies.futures]
+optional = true
+version = "0.3.12"
+default-features = false
+features = ["std"]
+
 [dev-dependencies]
 criterion = "0.3.1"
+[dev-dependencies.tokio]
+version = "1"
+default-features = false
+features = ["macros", "io-util", "net", "rt", "rt-multi-thread"]
+[dev-dependencies.tokio-util]
+version = "0.6.2"
+default-features = false
+features = ["compat"]
 
 [features]
 default = ["std"]
@@ -26,6 +40,10 @@ std = ["alloc"]
 # enabled. Without this feature neither the encoder nor the decoder exists.
 # This is purely a reservation for future possibilities.
 alloc = []
+# Enable usage of `async` through `futures`. This is basically the blocker
+# for `1.0` as we may track its version. Note that this negates no_std right
+# now but implicitly through being required from futures.
+async = ["futures"]
 
 [[bin]]
 name = "lzw"
@@ -49,3 +67,7 @@ required-features = ["std"]
 [[test]]
 name = "roundtrip"
 required-features = ["std"]
+
+[[test]]
+name = "async"
+required-features = ["async", "std"]
