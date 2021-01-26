@@ -429,9 +429,11 @@ impl<'d, W: futures::io::AsyncWrite + core::marker::Unpin> IntoAsync<'d, W> {
         self.buffer = Some(StreamBuf::Borrowed(buffer));
     }
 
-    async fn encode_part(&mut self, read: impl futures::io::AsyncBufRead, finish: bool)
-        -> StreamResult
-    {
+    async fn encode_part(
+        &mut self,
+        read: impl futures::io::AsyncBufRead,
+        finish: bool,
+    ) -> StreamResult {
         use futures::io::AsyncBufReadExt;
         use futures::io::AsyncWriteExt;
 
@@ -486,7 +488,10 @@ impl<'d, W: futures::io::AsyncWrite + core::marker::Unpin> IntoAsync<'d, W> {
             let done = match result.status {
                 Ok(ok) => ok,
                 Err(err) => {
-                    break Err(io::Error::new(io::ErrorKind::InvalidData, &*format!("{:?}", err)));
+                    break Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        &*format!("{:?}", err),
+                    ));
                 }
             };
 
@@ -506,7 +511,7 @@ impl<'d, W: futures::io::AsyncWrite + core::marker::Unpin> IntoAsync<'d, W> {
             // deterministically handle so that we don't need to restart everything from scratch as
             // the only recovery strategy. Any changes welcome.
             match writer.write_all(&outbuf[..result.consumed_out]).await {
-                Ok(_) => {},
+                Ok(_) => {}
                 Err(err) => break Err(err),
             }
         };
