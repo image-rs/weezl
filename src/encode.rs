@@ -37,6 +37,19 @@ pub struct IntoStream<'d, W> {
     default_size: usize,
 }
 
+/// An async decoding sink.
+///
+/// See [`Encoder::into_async`] on how to create this type.
+///
+/// [`Encoder::into_async`]: struct.Encoder.html#method.into_async
+#[cfg(feature = "async")]
+pub struct IntoAsync<'d, W> {
+    encoder: &'d mut Encoder,
+    writer: W,
+    buffer: Option<StreamBuf<'d>>,
+    default_size: usize,
+}
+
 trait Stateful {
     fn advance(&mut self, inp: &[u8], out: &mut [u8]) -> BufferResult;
     fn mark_ended(&mut self) -> bool;
@@ -213,6 +226,17 @@ impl Encoder {
         }
     }
 
+    /// Construct a encoder into an async writer.
+    #[cfg(feature = "async")]
+    pub fn into_async<W: futures::io::AsyncWrite>(&mut self, writer: W) -> IntoAsync<'_, W> {
+        IntoAsync {
+            encoder: self,
+            writer,
+            buffer: None,
+            default_size: STREAM_BUF_SIZE,
+        }
+    }
+
     /// Mark the encoding as in the process of finishing.
     ///
     /// The next following call to `encode_bytes` which is able to consume the complete input will
@@ -361,6 +385,13 @@ impl<'d, W: Write> IntoStream<'d, W> {
         }
     }
 }
+
+// This is implemented in a separate file, so that 1.34.2 does not parse it. Otherwise, it would
+// trip over the usage of await, which is a reserved keyword in that edition/version. It only
+// contains an impl block.
+#[cfg(feature = "async")]
+#[path = "encode_into_async.rs"]
+mod impl_encode_into_async;
 
 impl<B: Buffer> EncodeState<B> {
     fn new(min_size: u8) -> Self {
