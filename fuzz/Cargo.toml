@@ -29,3 +29,7 @@ name = "roundtrip"
 path = "fuzz_targets/roundtrip.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "decode0"
+path = "fuzz_targets/decode0.rs"

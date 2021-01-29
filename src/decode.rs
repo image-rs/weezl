@@ -143,10 +143,10 @@ impl Decoder {
     ///
     /// # Panics
     ///
-    /// The `size` needs to be in the interval `2..=12`.
+    /// The `size` needs to be in the interval `0..=12`.
     pub fn new(order: BitOrder, size: u8) -> Self {
         type Boxed = Box<dyn Stateful + Send + 'static>;
-        super::assert_code_size(size);
+        super::assert_decode_size(size);
         let state = match order {
             BitOrder::Lsb => Box::new(DecodeState::<LsbBuffer>::new(size)) as Boxed,
             BitOrder::Msb => Box::new(DecodeState::<MsbBuffer>::new(size)) as Boxed,
@@ -163,10 +163,10 @@ impl Decoder {
     ///
     /// # Panics
     ///
-    /// The `size` needs to be in the interval `2..=12`.
+    /// The `size` needs to be in the interval `0..=12`.
     pub fn with_tiff_size_switch(order: BitOrder, size: u8) -> Self {
         type Boxed = Box<dyn Stateful + Send + 'static>;
-        super::assert_code_size(size);
+        super::assert_decode_size(size);
         let state = match order {
             BitOrder::Lsb => {
                 let mut state = Box::new(DecodeState::<LsbBuffer>::new(size));
@@ -1069,8 +1069,8 @@ mod tests {
     use crate::{decode::Decoder, BitOrder};
 
     #[test]
-    #[should_panic]
     fn invalid_code_size_low() {
+        let _ = Decoder::new(BitOrder::Msb, 0);
         let _ = Decoder::new(BitOrder::Msb, 1);
     }
 

@@ -162,7 +162,7 @@ impl Encoder {
     /// The `size` needs to be in the interval `2..=12`.
     pub fn new(order: BitOrder, size: u8) -> Self {
         type Boxed = Box<dyn Stateful + Send + 'static>;
-        super::assert_code_size(size);
+        super::assert_encode_size(size);
         let state = match order {
             BitOrder::Lsb => Box::new(EncodeState::<LsbBuffer>::new(size)) as Boxed,
             BitOrder::Msb => Box::new(EncodeState::<MsbBuffer>::new(size)) as Boxed,
@@ -182,7 +182,7 @@ impl Encoder {
     /// The `size` needs to be in the interval `2..=12`.
     pub fn with_tiff_size_switch(order: BitOrder, size: u8) -> Self {
         type Boxed = Box<dyn Stateful + Send + 'static>;
-        super::assert_code_size(size);
+        super::assert_encode_size(size);
         let state = match order {
             BitOrder::Lsb => {
                 let mut state = Box::new(EncodeState::<LsbBuffer>::new(size));
