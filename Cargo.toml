@@ -73,3 +73,6 @@ required-features = ["std"]
 [[test]]
 name = "async"
 required-features = ["async", "std"]
+
+[package.metadata.docs.rs]
+all-features = true
