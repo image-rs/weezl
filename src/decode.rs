@@ -411,14 +411,14 @@ impl<'d, W: Write> IntoStream<'d, W> {
 }
 
 impl IntoVec<'_> {
-    /// Decode data from a reader.
+    /// Decode data from a slice.
     ///
-    /// This will read data until the stream is empty or an end marker is reached.
+    /// This will read data until the slice is empty or an end marker is reached.
     pub fn decode(&mut self, read:  &[u8]) -> VectorResult {
         self.decode_part(read, false)
     }
 
-    /// Decode data from a reader, requiring an end marker.
+    /// Decode data from a slice, requiring an end marker.
     pub fn decode_all(mut self, read: &[u8]) -> VectorResult {
         self.decode_part(read, true)
     }
@@ -430,6 +430,7 @@ impl IntoVec<'_> {
 
         // Use the vector to do overflow checks and w/e.
         self.vector.reserve(CHUNK_SIZE);
+        // FIXME: decoding into uninit buffer?
         self.vector.resize(length + CHUNK_SIZE, 0u8);
 
         (&mut self.vector[length..], decoder)
