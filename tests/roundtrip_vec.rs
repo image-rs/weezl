@@ -42,15 +42,11 @@ fn assert_roundtrips(data: &[u8], flavor: Flavor, bit_width: u8, bit_order: BitO
     let mut encoder = c(bit_order, bit_width);
     let mut buffer = Vec::with_capacity(2 * data.len() + 40);
 
-    let _ = encoder
-        .into_vec(&mut buffer)
-        .encode_all(data);
+    let _ = encoder.into_vec(&mut buffer).encode_all(data);
 
     let mut decoder = d(bit_order, bit_width);
     let mut compare = vec![];
-    let result = decoder
-        .into_vec(&mut compare)
-        .decode_all(buffer.as_slice());
+    let result = decoder.into_vec(&mut compare).decode_all(buffer.as_slice());
     assert!(
         result.status.is_ok(),
         "{:?}, {}, {:?}",

@@ -285,7 +285,10 @@ impl Decoder {
     /// requires the `std`-feature. Also, it can make full use of the extra buffer control that the
     /// special target exposes.
     pub fn into_vec<'lt>(&'lt mut self, vec: &'lt mut Vec<u8>) -> IntoVec<'lt> {
-        IntoVec { decoder: self, vector: vec }
+        IntoVec {
+            decoder: self,
+            vector: vec,
+        }
     }
 
     /// Check if the decoding has finished.
@@ -458,7 +461,7 @@ impl IntoVec<'_> {
     /// Decode data from a slice.
     ///
     /// This will read data until the slice is empty or an end marker is reached.
-    pub fn decode(&mut self, read:  &[u8]) -> VectorResult {
+    pub fn decode(&mut self, read: &[u8]) -> VectorResult {
         self.decode_part(read, false)
     }
 

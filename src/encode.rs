@@ -297,7 +297,10 @@ impl Encoder {
     /// requires the `std`-feature. Also, it can make full use of the extra buffer control that the
     /// special target exposes.
     pub fn into_vec<'lt>(&'lt mut self, vec: &'lt mut Vec<u8>) -> IntoVec<'lt> {
-        IntoVec { encoder: self, vector: vec }
+        IntoVec {
+            encoder: self,
+            vector: vec,
+        }
     }
 
     /// Mark the encoding as in the process of finishing.
@@ -451,7 +454,7 @@ impl<'d, W: Write> IntoStream<'d, W> {
 
 impl IntoVec<'_> {
     /// Encode data from a slice.
-    pub fn encode(&mut self, read:  &[u8]) -> VectorResult {
+    pub fn encode(&mut self, read: &[u8]) -> VectorResult {
         self.encode_part(read, false)
     }
 
