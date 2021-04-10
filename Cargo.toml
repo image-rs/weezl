@@ -67,9 +67,16 @@ name = "lzw-decompress"
 required-features = ["std"]
 
 [[test]]
+name = "async"
+required-features = ["async", "std"]
+
+[[test]]
 name = "roundtrip"
 required-features = ["std"]
 
 [[test]]
-name = "async"
-required-features = ["async", "std"]
+name = "roundtrip_vec"
+required-features = ["alloc"]
+
+[package.metadata.docs.rs]
+all-features = true

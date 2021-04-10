@@ -1,5 +1,5 @@
 //! A module for all encoding needs.
-use crate::error::{BufferResult, LzwError, LzwStatus};
+use crate::error::{BufferResult, LzwError, LzwStatus, VectorResult};
 use crate::{BitOrder, Code, StreamBuf, MAX_CODESIZE, MAX_ENTRIES, STREAM_BUF_SIZE};
 
 use crate::alloc::{boxed::Box, vec::Vec};
@@ -13,6 +13,22 @@ use std::io::{self, BufRead, Write};
 /// The same structure can be utilized with streams as well as your own buffers and driver logic.
 /// It may even be possible to mix them if you are sufficiently careful not to lose any written
 /// data in the process.
+///
+/// This is a sans-IO implementation, meaning that it only contains the state of the encoder and
+/// the caller will provide buffers for input and output data when calling the basic
+/// [`encode_bytes`] method. Nevertheless, a number of _adapters_ are provided in the `into_*`
+/// methods for enoding with a particular style of common IO.
+///
+/// * [`encode`] for encoding once without any IO-loop.
+/// * [`into_async`] for encoding with the `futures` traits for asynchronous IO.
+/// * [`into_stream`] for encoding with the standard `io` traits.
+/// * [`into_vec`] for in-memory encoding.
+///
+/// [`encode_bytes`]: #method.encode_bytes
+/// [`encode`]: #method.encode
+/// [`into_async`]: #method.into_async
+/// [`into_stream`]: #method.into_stream
+/// [`into_vec`]: #method.into_vec
 pub struct Encoder {
     /// Internally dispatch via a dynamic trait object. This did not have any significant
     /// performance impact as we batch data internally and this pointer does not change after
@@ -50,12 +66,22 @@ pub struct IntoAsync<'d, W> {
     default_size: usize,
 }
 
+/// A encoding sink into a vector.
+///
+/// See [`Encoder::into_vec`] on how to create this type.
+///
+/// [`Encoder::into_vec`]: struct.Encoder.html#method.into_vec
+pub struct IntoVec<'d> {
+    encoder: &'d mut Encoder,
+    vector: &'d mut Vec<u8>,
+}
+
 trait Stateful {
     fn advance(&mut self, inp: &[u8], out: &mut [u8]) -> BufferResult;
     fn mark_ended(&mut self) -> bool;
     /// Reset the state tracking if end code has been written.
     fn restart(&mut self);
-    /// Reset the decoder to the beginning, dropping all buffers etc.
+    /// Reset the encoder to the beginning, dropping all buffers etc.
     fn reset(&mut self);
 }
 
@@ -215,6 +241,32 @@ impl Encoder {
         self.state.advance(inp, out)
     }
 
+    /// Encode a single chunk of data.
+    ///
+    /// This method will add an end marker to the encoded chunk.
+    ///
+    /// This is a convenience wrapper around [`into_vec`]. Use the `into_vec` adapter to customize
+    /// buffer size, to supply an existing vector, to control whether an end marker is required, or
+    /// to preserve partial data in the case of a decoding error.
+    ///
+    /// [`into_vec`]: #into_vec
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use weezl::{BitOrder, encode::Encoder};
+    ///
+    /// let data = b"Hello, world";
+    /// let encoded = Encoder::new(BitOrder::Msb, 9)
+    ///     .encode(data)
+    ///     .expect("All bytes valid for code size");
+    /// ```
+    pub fn encode(&mut self, data: &[u8]) -> Result<Vec<u8>, LzwError> {
+        let mut output = Vec::new();
+        self.into_vec(&mut output).encode_all(data).status?;
+        Ok(output)
+    }
+
     /// Construct a encoder into a writer.
     #[cfg(feature = "std")]
     pub fn into_stream<W: Write>(&mut self, writer: W) -> IntoStream<'_, W> {
@@ -234,6 +286,20 @@ impl Encoder {
             writer,
             buffer: None,
             default_size: STREAM_BUF_SIZE,
+        }
+    }
+
+    /// Construct an encoder into a vector.
+    ///
+    /// All encoded data is appended and the vector is __not__ cleared.
+    ///
+    /// Compared to `into_stream` this interface allows a high-level access to encoding without
+    /// requires the `std`-feature. Also, it can make full use of the extra buffer control that the
+    /// special target exposes.
+    pub fn into_vec<'lt>(&'lt mut self, vec: &'lt mut Vec<u8>) -> IntoVec<'lt> {
+        IntoVec {
+            encoder: self,
+            vector: vec,
         }
     }
 
@@ -383,6 +449,96 @@ impl<'d, W: Write> IntoStream<'d, W> {
             bytes_written,
             status,
         }
+    }
+}
+
+impl IntoVec<'_> {
+    /// Encode data from a slice.
+    pub fn encode(&mut self, read: &[u8]) -> VectorResult {
+        self.encode_part(read, false)
+    }
+
+    /// Decode data from a reader, adding an end marker.
+    pub fn encode_all(mut self, read: &[u8]) -> VectorResult {
+        self.encode_part(read, true)
+    }
+
+    fn grab_buffer(&mut self) -> (&mut [u8], &mut Encoder) {
+        const CHUNK_SIZE: usize = 1 << 12;
+        let decoder = &mut self.encoder;
+        let length = self.vector.len();
+
+        // Use the vector to do overflow checks and w/e.
+        self.vector.reserve(CHUNK_SIZE);
+        // FIXME: encoding into uninit buffer?
+        self.vector.resize(length + CHUNK_SIZE, 0u8);
+
+        (&mut self.vector[length..], decoder)
+    }
+
+    fn encode_part(&mut self, part: &[u8], finish: bool) -> VectorResult {
+        let mut result = VectorResult {
+            consumed_in: 0,
+            consumed_out: 0,
+            status: Ok(LzwStatus::Ok),
+        };
+
+        enum Progress {
+            Ok,
+            Done,
+        }
+
+        // Converting to mutable refs to move into the `once` closure.
+        let read_bytes = &mut result.consumed_in;
+        let write_bytes = &mut result.consumed_out;
+        let mut data = part;
+
+        // A 64 MB buffer is quite large but should get alloc_zeroed.
+        // Note that the decoded size can be up to quadratic in code block.
+        let once = move || {
+            // Grab a new output buffer.
+            let (outbuf, encoder) = self.grab_buffer();
+
+            if finish {
+                encoder.finish();
+            }
+
+            // Decode as much of the buffer as fits.
+            let result = encoder.encode_bytes(data, &mut outbuf[..]);
+            // Do the bookkeeping and consume the buffer.
+            *read_bytes += result.consumed_in;
+            *write_bytes += result.consumed_out;
+            data = &data[result.consumed_in..];
+
+            let unfilled = outbuf.len() - result.consumed_out;
+            let filled = self.vector.len() - unfilled;
+            self.vector.truncate(filled);
+
+            // Handle the status in the result.
+            let done = result.status?;
+            if let LzwStatus::Done = done {
+                Ok(Progress::Done)
+            } else {
+                Ok(Progress::Ok)
+            }
+        };
+
+        // Decode chunks of input data until we're done.
+        let status: Result<(), _> = core::iter::repeat_with(once)
+            // scan+fuse can be replaced with map_while
+            .scan((), |(), result| match result {
+                Ok(Progress::Ok) => Some(Ok(())),
+                Err(err) => Some(Err(err)),
+                Ok(Progress::Done) => None,
+            })
+            .fuse()
+            .collect();
+
+        if let Err(err) = status {
+            result.status = Err(err);
+        }
+
+        result
     }
 }
 
