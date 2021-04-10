@@ -225,6 +225,32 @@ impl Encoder {
         self.state.advance(inp, out)
     }
 
+    /// Encode a single chunk of data.
+    ///
+    /// This method will add an end marker to the encoded chunk.
+    ///
+    /// This is a convenience wrapper around [`into_vec`]. Use the `into_vec` adapter to customize
+    /// buffer size, to supply an existing vector, to control whether an end marker is required, or
+    /// to preserve partial data in the case of a decoding error.
+    ///
+    /// [`into_vec`]: #into_vec
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use weezl::{BitOrder, encode::Encoder};
+    ///
+    /// let data = b"Hello, world";
+    /// let encoded = Encoder::new(BitOrder::Msb, 9)
+    ///     .encode(data)
+    ///     .expect("All bytes valid for code size");
+    /// ```
+    pub fn encode(&mut self, data: &[u8]) -> Result<Vec<u8>, LzwError> {
+        let mut output = Vec::new();
+        self.into_vec(&mut output).encode_all(data).status?;
+        Ok(output)
+    }
+
     /// Construct a encoder into a writer.
     #[cfg(feature = "std")]
     pub fn into_stream<W: Write>(&mut self, writer: W) -> IntoStream<'_, W> {

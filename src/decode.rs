@@ -211,6 +211,34 @@ impl Decoder {
         self.state.advance(inp, out)
     }
 
+    /// Decode a single chunk of lzw encoded data.
+    ///
+    /// This method requires the data to contain an end marker, and returns an error otherwise.
+    ///
+    /// This is a convenience wrapper around [`into_vec`]. Use the `into_vec` adapter to customize
+    /// buffer size, to supply an existing vector, to control whether an end marker is required, or
+    /// to preserve partial data in the case of a decoding error.
+    ///
+    /// [`into_vec`]: #into_vec
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use weezl::{BitOrder, decode::Decoder};
+    ///
+    /// // Encoded that was created with an encoder.
+    /// let data = b"\x80\x04\x81\x94l\x1b\x06\xf0\xb0 \x1d\xc6\xf1\xc8l\x19 \x10";
+    /// let decoded = Decoder::new(BitOrder::Msb, 9)
+    ///     .decode(data)
+    ///     .unwrap();
+    /// assert_eq!(decoded, b"Hello, world");
+    /// ```
+    pub fn decode(&mut self, data: &[u8]) -> Result<Vec<u8>, LzwError> {
+        let mut output = vec![];
+        self.into_vec(&mut output).decode_all(data).status?;
+        Ok(output)
+    }
+
     /// Construct a decoder into a writer.
     #[cfg(feature = "std")]
     pub fn into_stream<W: Write>(&mut self, writer: W) -> IntoStream<'_, W> {
