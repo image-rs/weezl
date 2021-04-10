@@ -5,6 +5,36 @@
 //! most or least significant bits first. The maximum possible code size is 12 bits, the smallest
 //! available code size is 2 bits.
 //!
+//! ## Example
+//!
+//! These two code blocks show the compression and corresponding decompression. Note that you must
+//! use the same arguments to `Encoder` and `Decoder`, otherwise the decoding might fail or produce
+//! bad results.
+//!
+#![cfg_attr(feature = "std", doc = "```")]
+#![cfg_attr(not(feature = "std"), doc = "```ignore")]
+//! use weezl::{BitOrder, encode::Encoder};
+//!
+//! let data = b"Hello, world";
+//! let compressed = Encoder::new(BitOrder::Msb, 9)
+//!     .encode(data)
+//!     .unwrap();
+//! ```
+//!
+#![cfg_attr(feature = "std", doc = "```")]
+#![cfg_attr(not(feature = "std"), doc = "```ignore")]
+//! use weezl::{BitOrder, decode::Decoder};
+//! # let compressed = b"\x80\x04\x81\x94l\x1b\x06\xf0\xb0 \x1d\xc6\xf1\xc8l\x19 \x10".to_vec();
+//! # let data = b"Hello, world";
+//!
+//! let decompressed = Decoder::new(BitOrder::Msb, 9)
+//!     .decode(&compressed)
+//!     .unwrap();
+//! assert_eq!(decompressed, data);
+//! ```
+//!
+//! ## LZW Details
+//!
 //! The de- and encoder expect the LZW stream to start with a clear code and end with an
 //! end code which are defined as follows:
 //!
@@ -17,19 +47,7 @@
 //! precise). Since there are no ways to handle allocation errors it is not recommended to operate
 //! it on 16-bit targets.
 //!
-//! Exemplary use of the encoder:
-//!
-#![cfg_attr(feature = "std", doc = "```")]
-#![cfg_attr(not(feature = "std"), doc = "```ignore")]
-//! use weezl::{BitOrder, encode::Encoder};
-//! let size = 8;
-//! let data = b"TOBEORNOTTOBEORTOBEORNOT";
-//! let mut compressed = vec![];
-//!
-//! let mut enc = Encoder::new(BitOrder::Msb, size);
-//! let result = enc.into_stream(&mut compressed).encode(&data[..]);
-//! result.status.unwrap();
-//! ```
+//! ## Allocations and standard library
 //!
 //! The main algorithm can be used in `no_std` as well, although it requires an allocator. This
 //! restriction might be lifted at a later stage. For this you should deactivate the `std` feature.

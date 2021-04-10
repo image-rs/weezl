@@ -13,6 +13,22 @@ use std::io::{self, BufRead, Write};
 /// The same structure can be utilized with streams as well as your own buffers and driver logic.
 /// It may even be possible to mix them if you are sufficiently careful not to lose any written
 /// data in the process.
+///
+/// This is a sans-IO implementation, meaning that it only contains the state of the encoder and
+/// the caller will provide buffers for input and output data when calling the basic
+/// [`encode_bytes`] method. Nevertheless, a number of _adapters_ are provided in the `into_*`
+/// methods for enoding with a particular style of common IO.
+///
+/// * [`encode`] for encoding once without any IO-loop.
+/// * [`into_async`] for encoding with the `futures` traits for asynchronous IO.
+/// * [`into_stream`] for encoding with the standard `io` traits.
+/// * [`into_vec`] for in-memory encoding.
+///
+/// [`encode_bytes`]: #method.encode_bytes
+/// [`encode`]: #method.encode
+/// [`into_async`]: #method.into_async
+/// [`into_stream`]: #method.into_stream
+/// [`into_vec`]: #method.into_vec
 pub struct Encoder {
     /// Internally dispatch via a dynamic trait object. This did not have any significant
     /// performance impact as we batch data internally and this pointer does not change after

@@ -13,6 +13,22 @@ use std::io::{self, BufRead, Write};
 /// The same structure can be utilized with streams as well as your own buffers and driver logic.
 /// It may even be possible to mix them if you are sufficiently careful not to lose or skip any
 /// already decode data in the process.
+///
+/// This is a sans-IO implementation, meaning that it only contains the state of the decoder and
+/// the caller will provide buffers for input and output data when calling the basic
+/// [`decode_bytes`] method. Nevertheless, a number of _adapters_ are provided in the `into_*`
+/// methods for decoding with a particular style of common IO.
+///
+/// * [`decode`] for decoding once without any IO-loop.
+/// * [`into_async`] for decoding with the `futures` traits for asynchronous IO.
+/// * [`into_stream`] for decoding with the standard `io` traits.
+/// * [`into_vec`] for in-memory decoding.
+///
+/// [`decode_bytes`]: #method.decode_bytes
+/// [`decode`]: #method.decode
+/// [`into_async`]: #method.into_async
+/// [`into_stream`]: #method.into_stream
+/// [`into_vec`]: #method.into_vec
 pub struct Decoder {
     state: Box<dyn Stateful + Send + 'static>,
 }
