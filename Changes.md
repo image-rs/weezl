@@ -1,3 +1,10 @@
+## Version 0.1.5
+
+- Added `IntoVec` adapters that simplify in-memory de- and encoding. A further
+  'one-shot' interface is exposed in the `Decoder` and `Encoder` themselves
+  which makes the process a one liner in the simplest cases. Contrary to
+  `IntoStream`, these are available in all cases and do not require `std`.
+
 ## Version 0.1.4
 
 - Added `IntoAsync` adapters for asynchronous de- and encoding. The interface
