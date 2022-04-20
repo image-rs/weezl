@@ -1,3 +1,8 @@
+## Version 0.1.6
+
+- Fixed an integer overflow and panic that could occur during decoding.
+  Decoding performance may degrade after long sequences without a reset code.
+
 ## Version 0.1.5
 
 - Added `IntoVec` adapters that simplify in-memory de- and encoding. A further
