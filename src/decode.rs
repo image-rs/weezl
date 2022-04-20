@@ -762,9 +762,13 @@ impl<C: CodeBuffer> Stateful for DecodeState<C> {
                 }
 
                 // Check that we don't overflow the code size with all codes we burst decode.
-                let potential_code = self.next_code + burst_size as u16;
-                burst_size += 1;
-                if potential_code == self.code_buffer.max_code() - Code::from(self.is_tiff) {
+                if let Some(potential_code) = self.next_code.checked_add(burst_size as u16) {
+                    burst_size += 1;
+                    if potential_code == self.code_buffer.max_code() - Code::from(self.is_tiff) {
+                        break;
+                    }
+                } else {
+                    // next_code overflowed
                     break;
                 }
 
