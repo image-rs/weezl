@@ -145,6 +145,8 @@ struct DecodeState<CodeBuffer> {
     has_ended: bool,
     /// If tiff then bumps are a single code sooner.
     is_tiff: bool,
+    /// Do we allow stream to start without an explicit reset code?
+    implicit_reset: bool,
     /// The buffer for decoded words.
     code_buffer: CodeBuffer,
 }
@@ -555,7 +557,7 @@ mod impl_decode_into_async;
 impl<C: CodeBuffer> DecodeState<C> {
     fn new(min_size: u8) -> Self {
         DecodeState {
-            min_size: min_size,
+            min_size,
             table: Table::new(),
             buffer: Buffer::new(),
             last: None,
@@ -564,6 +566,7 @@ impl<C: CodeBuffer> DecodeState<C> {
             next_code: (1 << min_size) + 2,
             has_ended: false,
             is_tiff: false,
+            implicit_reset: true,
             code_buffer: CodeBuffer::new(min_size),
         }
     }
@@ -676,9 +679,16 @@ impl<C: CodeBuffer> Stateful for DecodeState<C> {
                             self.has_ended = true;
                             status = Ok(LzwStatus::Done);
                         } else if self.table.is_empty() {
-                            // We require an explicit reset.
-                            // TODO: allow this to be configured and do the setup implicitly.
-                            status = Err(LzwError::InvalidCode);
+                            if self.implicit_reset {
+                                self.init_tables();
+
+                                self.buffer.fill_reconstruct(&self.table, init_code);
+                                let link = self.table.at(init_code).clone();
+                                code_link = Some((init_code, link));
+                            } else {
+                                // We require an explicit reset.
+                                status = Err(LzwError::InvalidCode);
+                            }
                         } else {
                             // Reconstruct the first code in the buffer.
                             self.buffer.fill_reconstruct(&self.table, init_code);
