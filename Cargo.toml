@@ -78,5 +78,9 @@ required-features = ["std"]
 name = "roundtrip_vec"
 required-features = ["alloc"]
 
+[[test]]
+name = "implicit_reset"
+required-features = ["std"]
+
 [package.metadata.docs.rs]
 all-features = true
