@@ -1,3 +1,7 @@
+## Version 0.1.7
+
+- Implicit reset is now supported for decoding.
+
 ## Version 0.1.6
 
 - Fixed an integer overflow and panic that could occur during decoding.
