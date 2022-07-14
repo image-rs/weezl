@@ -1,3 +1,9 @@
+## Version 0.2.0
+
+- No functional changes.
+- MSRV is recorded as `rust-version` in `Cargo.toml` from now on and may change
+  with any minor version.
+
 ## Version 0.1.7
 
 - Implicit reset is now supported for decoding.
