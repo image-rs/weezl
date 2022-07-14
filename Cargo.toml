@@ -8,6 +8,7 @@ readme = "README.md"
 repository = "https://github.com/image-rs/lzw.git"
 documentation = "https://docs.rs/weezl"
 edition = "2018"
+rust-version = "1.56"
 exclude = ["benches/*.lzw"]
 
 [lib]
@@ -51,7 +52,7 @@ alloc = []
 # 1.34.2 but only on stable.
 async = ["futures", "std"]
 # Dependencies of our binary target.
-bin = ["clap"]
+bin = ["clap", "std"]
 
 [[bin]]
 name = "lzw"
