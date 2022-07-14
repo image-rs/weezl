@@ -214,9 +214,7 @@ enum CodingResult {
 }
 
 impl CodingResult {
-    fn catch_panic(
-        op: fn() -> Result<(), io::Error>
-    ) -> Self {
+    fn catch_panic(op: fn() -> Result<(), io::Error>) -> Self {
         std::panic::catch_unwind(|| match op() {
             Ok(()) => CodingResult::Ok,
             Err(err) => CodingResult::Err(err),
@@ -234,7 +232,9 @@ impl std::process::Termination for CodingResult {
                 std::process::ExitCode::FAILURE
             }
             CodingResult::Panic => {
-                eprintln!("The process failed irrecoverably! This should never happen and is a bug.");
+                eprintln!(
+                    "The process failed irrecoverably! This should never happen and is a bug."
+                );
                 eprintln!("If you know what this means, please report it to:");
                 eprintln!("	<{}>", env!("CARGO_PKG_REPOSITORY"));
                 std::process::ExitCode::from(128)
