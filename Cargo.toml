@@ -31,6 +31,10 @@ version = "0.6.2"
 default-features = false
 features = ["compat"]
 
+[dependencies.clap]
+version = "3"
+optional = true
+
 [features]
 default = ["std"]
 # Enable usage of the standard library and in particular any interface that
@@ -46,12 +50,14 @@ alloc = []
 # `std::io::Error` interface. Note that this features is NOT supported on
 # 1.34.2 but only on stable.
 async = ["futures", "std"]
+# Dependencies of our binary target.
+bin = ["clap"]
 
 [[bin]]
 name = "lzw"
 path = "bin/lzw.rs"
 bench = false
-required-features = ["std"]
+required-features = ["std", "bin"]
 
 [[bench]]
 name = "msb8"
