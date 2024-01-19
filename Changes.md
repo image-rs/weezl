@@ -1,3 +1,8 @@
+## Version 0.1.8
+
+- Fixed incorrect state after `Decoder::reset`
+- Added `Debug` to result types
+
 ## Version 0.1.7
 
 - Implicit reset is now supported for decoding.
