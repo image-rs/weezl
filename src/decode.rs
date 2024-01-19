@@ -595,6 +595,7 @@ impl<C: CodeBuffer> Stateful for DecodeState<C> {
 
     fn reset(&mut self) {
         self.table.init(self.min_size);
+        self.next_code = (1 << self.min_size) + 2;
         self.buffer.read_mark = 0;
         self.buffer.write_mark = 0;
         self.last = None;
