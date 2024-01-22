@@ -8,22 +8,29 @@ enum Flavor {
 }
 
 #[test]
-fn roundtrip_all() {
+fn roundtrip_all_lsb() {
+    roundtrip_all(BitOrder::Lsb);
+}
+
+#[test]
+fn roundtrip_all_msb() {
+    roundtrip_all(BitOrder::Msb);
+}
+
+fn roundtrip_all(bit_order: BitOrder) {
     let file = env::args().next().unwrap();
     let data = fs::read(file).unwrap();
 
     for &flavor in &[Flavor::Gif, Flavor::Tiff] {
-        for &bit_order in &[BitOrder::Lsb, BitOrder::Msb] {
-            for bit_width in 2..8 {
-                let data: Vec<_> = data
-                    .iter()
-                    .copied()
-                    .map(|b| b & ((1 << bit_width) - 1))
-                    .collect();
+        for bit_width in 2..8 {
+            let data: Vec<_> = data
+                .iter()
+                .copied()
+                .map(|b| b & ((1 << bit_width) - 1))
+                .collect();
 
-                println!("Roundtrip test {:?} {:?} {}", flavor, bit_order, bit_width);
-                assert_roundtrips(&*data, flavor, bit_width, bit_order);
-            }
+            println!("Roundtrip test {:?} {:?} {}", flavor, bit_order, bit_width);
+            assert_roundtrips(&*data, flavor, bit_width, bit_order);
         }
     }
 }
