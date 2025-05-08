@@ -40,37 +40,41 @@ fn roundtrip_all(bit_order: BitOrder, max_io_len: usize) {
                 .map(|b| b & ((1 << bit_width) - 1))
                 .collect();
 
+            let enc = match flavor {
+                Flavor::Gif => encode::Configuration::new,
+                Flavor::Tiff => encode::Configuration::with_tiff_size_switch,
+            }(bit_order, bit_width);
+
+            let dec = match flavor {
+                Flavor::Gif => decode::Configuration::new,
+                Flavor::Tiff => decode::Configuration::with_tiff_size_switch,
+            }(bit_order, bit_width);
+
+            let yielding = dec.clone().with_yield_on_full_buffer(true);
+
             println!("Roundtrip test {:?} {:?} {}", flavor, bit_order, bit_width);
-            assert_roundtrips(&*data, flavor, bit_width, bit_order, max_io_len);
+            assert_roundtrips(&*data, enc.clone(), dec, max_io_len);
+
+            // Our encoder always passes an enclosed stream. So this must be the same.
+            assert_roundtrips(&*data, enc, yielding, max_io_len);
         }
     }
 }
 
 fn assert_roundtrips(
     data: &[u8],
-    flavor: Flavor,
-    bit_width: u8,
-    bit_order: BitOrder,
+    enc: encode::Configuration,
+    dec: decode::Configuration,
     max_io_len: usize,
 ) {
-    let (c, d): (
-        fn(BitOrder, u8) -> encode::Encoder,
-        fn(BitOrder, u8) -> decode::Decoder,
-    ) = match flavor {
-        Flavor::Gif => (encode::Encoder::new, decode::Decoder::new),
-        Flavor::Tiff => (
-            encode::Encoder::with_tiff_size_switch,
-            decode::Decoder::with_tiff_size_switch,
-        ),
-    };
-    let mut encoder = c(bit_order, bit_width);
+    let mut encoder = enc.clone().build();
     let mut writer = TinyWrite {
         data: Vec::with_capacity(2 * data.len() + 40),
         max_write_len: max_io_len,
     };
     let _ = encoder.into_stream(&mut writer).encode_all(data);
 
-    let mut decoder = d(bit_order, bit_width);
+    let mut decoder = dec.clone().build();
     let mut compare = vec![];
 
     let buf_reader = TinyRead {
@@ -78,21 +82,8 @@ fn assert_roundtrips(
         max_read_len: max_io_len,
     };
     let result = decoder.into_stream(&mut compare).decode_all(buf_reader);
-    assert!(
-        result.status.is_ok(),
-        "{:?}, {}, {:?}",
-        bit_order,
-        bit_width,
-        result.status
-    );
-    assert!(
-        data == &*compare,
-        "{:?}, {}\n{:?}\n{:?}",
-        bit_order,
-        bit_width,
-        data,
-        compare
-    );
+    assert!(result.status.is_ok(), "{:?}, {:?}", dec, result.status);
+    assert!(data == &*compare, "{:?}\n{:?}\n{:?}", dec, data, compare);
 }
 
 struct TinyRead<'a> {
