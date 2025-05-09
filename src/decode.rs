@@ -126,7 +126,11 @@ trait CodeBuffer {
     fn code_size(&self) -> u8;
 }
 
-struct DecodeState<CodeBuffer, const YIELD_ON_FULL: bool> {
+trait CodegenConstants {
+    const YIELD_ON_FULL: bool;
+}
+
+struct DecodeState<CodeBuffer, Constants: CodegenConstants> {
     /// The original minimum code size.
     min_size: u8,
     /// The table of decoded codes.
@@ -149,6 +153,8 @@ struct DecodeState<CodeBuffer, const YIELD_ON_FULL: bool> {
     implicit_reset: bool,
     /// The buffer for decoded words.
     code_buffer: CodeBuffer,
+    #[allow(dead_code)]
+    constants: core::marker::PhantomData<Constants>,
 }
 
 struct Buffer {
@@ -246,25 +252,42 @@ impl Decoder {
     }
 
     fn from_configuration(configuration: &Configuration) -> Box<dyn Stateful + Send + 'static> {
+        struct NoYield;
+        struct YieldOnFull;
+
+        impl CodegenConstants for NoYield {
+            const YIELD_ON_FULL: bool = false;
+        }
+
+        impl CodegenConstants for YieldOnFull {
+            const YIELD_ON_FULL: bool = true;
+        }
+
         type Boxed = Box<dyn Stateful + Send + 'static>;
         match (configuration.order, configuration.yield_on_full) {
             (BitOrder::Lsb, false) => {
-                let mut state = Box::new(DecodeState::<LsbBuffer, false>::new(configuration.size));
+                let mut state =
+                    Box::new(DecodeState::<LsbBuffer, NoYield>::new(configuration.size));
                 state.is_tiff = configuration.tiff;
                 state as Boxed
             }
             (BitOrder::Lsb, true) => {
-                let mut state = Box::new(DecodeState::<LsbBuffer, true>::new(configuration.size));
+                let mut state = Box::new(DecodeState::<LsbBuffer, YieldOnFull>::new(
+                    configuration.size,
+                ));
                 state.is_tiff = configuration.tiff;
                 state as Boxed
             }
             (BitOrder::Msb, false) => {
-                let mut state = Box::new(DecodeState::<MsbBuffer, false>::new(configuration.size));
+                let mut state =
+                    Box::new(DecodeState::<MsbBuffer, NoYield>::new(configuration.size));
                 state.is_tiff = configuration.tiff;
                 state as Boxed
             }
             (BitOrder::Msb, true) => {
-                let mut state = Box::new(DecodeState::<MsbBuffer, true>::new(configuration.size));
+                let mut state = Box::new(DecodeState::<MsbBuffer, YieldOnFull>::new(
+                    configuration.size,
+                ));
                 state.is_tiff = configuration.tiff;
                 state as Boxed
             }
@@ -614,7 +637,7 @@ impl IntoVec<'_> {
 #[path = "decode_into_async.rs"]
 mod impl_decode_into_async;
 
-impl<C: CodeBuffer, const B: bool> DecodeState<C, B> {
+impl<C: CodeBuffer, CgC: CodegenConstants> DecodeState<C, CgC> {
     fn new(min_size: u8) -> Self {
         DecodeState {
             min_size,
@@ -628,6 +651,7 @@ impl<C: CodeBuffer, const B: bool> DecodeState<C, B> {
             is_tiff: false,
             implicit_reset: true,
             code_buffer: CodeBuffer::new(min_size),
+            constants: core::marker::PhantomData,
         }
     }
 
@@ -644,7 +668,7 @@ impl<C: CodeBuffer, const B: bool> DecodeState<C, B> {
     }
 }
 
-impl<C: CodeBuffer, const YIELD_ON_FULL: bool> Stateful for DecodeState<C, YIELD_ON_FULL> {
+impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
     fn has_ended(&self) -> bool {
         self.has_ended
     }
@@ -803,18 +827,18 @@ impl<C: CodeBuffer, const YIELD_ON_FULL: bool> Stateful for DecodeState<C, YIELD
         let mut last_decoded: Option<&[u8]> = None;
 
         while let Some((mut code, mut link)) = code_link.take() {
-            if {
-                // We have more data buffered but not enough space to put it?
-                let need_more_space = out.is_empty() && !self.buffer.buffer().is_empty();
-                // We filled the output and they want to break exactly on that boundary.
-                let soft_eof = YIELD_ON_FULL && out.is_empty();
-                need_more_space || soft_eof
-            } {
-                code_link = Some((code, link));
-                break;
-            }
+            let want_more_space = if CgC::YIELD_ON_FULL {
+                out.is_empty()
+            } else {
+                // We have more data buffered but not enough space to put it? We want fetch a next
+                // symbol if possible as in the case of it being a new symbol we can refer to the
+                // buffered output as the source for that symbol's meaning and do a memcpy. It
+                // would be correct to break here instead but then that symbol must be
+                // reconstructed by iterating the code table.
+                out.is_empty() && !self.buffer.buffer().is_empty()
+            };
 
-            if YIELD_ON_FULL && out.is_empty() {
+            if want_more_space {
                 code_link = Some((code, link));
                 break;
             }
@@ -869,8 +893,10 @@ impl<C: CodeBuffer, const YIELD_ON_FULL: bool> Stateful for DecodeState<C, YIELD
                 // We do exactly one more code (the one being inspected in the current iteration)
                 // after the 'burst'. When we want to break decoding precisely on the supplied
                 // buffer, we check if this is the last code to be decoded into it.
-                if YIELD_ON_FULL && out.len() == usize::from(len) {
-                    break;
+                if CgC::YIELD_ON_FULL {
+                    if out.len() == usize::from(len) {
+                        break;
+                    }
                 }
 
                 bytes[burst_size - 1] = len;
@@ -1033,7 +1059,7 @@ impl<C: CodeBuffer, const YIELD_ON_FULL: bool> Stateful for DecodeState<C, YIELD
     }
 }
 
-impl<C: CodeBuffer, const B: bool> DecodeState<C, B> {
+impl<C: CodeBuffer, CgC: CodegenConstants> DecodeState<C, CgC> {
     fn next_symbol(&mut self, inp: &mut &[u8]) -> Option<Code> {
         self.code_buffer.next_symbol(inp)
     }
