@@ -827,15 +827,13 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
         let mut last_decoded: Option<&[u8]> = None;
 
         while let Some((mut code, mut link)) = code_link.take() {
-            let want_more_space = if CgC::YIELD_ON_FULL {
-                out.is_empty()
-            } else {
+            let want_more_space = {
                 // We have more data buffered but not enough space to put it? We want fetch a next
                 // symbol if possible as in the case of it being a new symbol we can refer to the
                 // buffered output as the source for that symbol's meaning and do a memcpy. It
                 // would be correct to break here instead but then that symbol must be
                 // reconstructed by iterating the code table.
-                out.is_empty() && !self.buffer.buffer().is_empty()
+                out.is_empty()
             };
 
             if want_more_space {
