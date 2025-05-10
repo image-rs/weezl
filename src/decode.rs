@@ -126,7 +126,11 @@ trait CodeBuffer {
     fn code_size(&self) -> u8;
 }
 
-struct DecodeState<CodeBuffer> {
+trait CodegenConstants {
+    const YIELD_ON_FULL: bool;
+}
+
+struct DecodeState<CodeBuffer, Constants: CodegenConstants> {
     /// The original minimum code size.
     min_size: u8,
     /// The table of decoded codes.
@@ -149,6 +153,8 @@ struct DecodeState<CodeBuffer> {
     implicit_reset: bool,
     /// The buffer for decoded words.
     code_buffer: CodeBuffer,
+    #[allow(dead_code)]
+    constants: core::marker::PhantomData<Constants>,
 }
 
 struct Buffer {
@@ -162,6 +168,65 @@ struct Table {
     depths: Vec<u16>,
 }
 
+/// Describes the static parameters for creating a decoder.
+#[derive(Clone, Debug)]
+pub struct Configuration {
+    order: BitOrder,
+    size: u8,
+    tiff: bool,
+    yield_on_full: bool,
+}
+
+impl Configuration {
+    /// Create a configuration to decode with the specified bit order and symbol size.
+    pub fn new(order: BitOrder, size: u8) -> Self {
+        super::assert_decode_size(size);
+        Configuration {
+            order,
+            size,
+            tiff: false,
+            yield_on_full: false,
+        }
+    }
+
+    /// Create a configuration for a TIFF compatible decoder.
+    pub fn with_tiff_size_switch(order: BitOrder, size: u8) -> Self {
+        super::assert_decode_size(size);
+        Configuration {
+            order,
+            size,
+            tiff: true,
+            yield_on_full: false,
+        }
+    }
+
+    /// Immediately yield to the caller when the decoder buffer is full.
+    ///
+    /// This can be used for `libtiff` compatibility. It will use a "relaxed" stream interpretation
+    /// that need not contain an explicit EOF. Instead, the decoder is expected to stop fetching
+    /// symbols when some out-of-band specified length of the decoded text has been reached. The
+    /// caller indicates this maximum length through the available output buffer space.
+    ///
+    /// Symbols afterwards must not be expected to be valid. On filling the output buffer space
+    /// completely, the decoder will return immediately to the caller instead of potentially
+    /// interpreting the following bit-stream (and returning an error on doing so).
+    ///
+    /// Default: `false`.
+    pub fn with_yield_on_full_buffer(self, do_yield: bool) -> Self {
+        Configuration {
+            yield_on_full: do_yield,
+            ..self
+        }
+    }
+
+    /// Create a new decoder with the define configuration.
+    pub fn build(self) -> Decoder {
+        Decoder {
+            state: Decoder::from_configuration(&self),
+        }
+    }
+}
+
 impl Decoder {
     /// Create a new decoder with the specified bit order and symbol size.
     ///
@@ -173,14 +238,7 @@ impl Decoder {
     ///
     /// The `size` needs to be in the interval `0..=12`.
     pub fn new(order: BitOrder, size: u8) -> Self {
-        type Boxed = Box<dyn Stateful + Send + 'static>;
-        super::assert_decode_size(size);
-        let state = match order {
-            BitOrder::Lsb => Box::new(DecodeState::<LsbBuffer>::new(size)) as Boxed,
-            BitOrder::Msb => Box::new(DecodeState::<MsbBuffer>::new(size)) as Boxed,
-        };
-
-        Decoder { state }
+        Configuration::new(order, size).build()
     }
 
     /// Create a TIFF compatible decoder with the specified bit order and symbol size.
@@ -193,22 +251,50 @@ impl Decoder {
     ///
     /// The `size` needs to be in the interval `0..=12`.
     pub fn with_tiff_size_switch(order: BitOrder, size: u8) -> Self {
-        type Boxed = Box<dyn Stateful + Send + 'static>;
-        super::assert_decode_size(size);
-        let state = match order {
-            BitOrder::Lsb => {
-                let mut state = Box::new(DecodeState::<LsbBuffer>::new(size));
-                state.is_tiff = true;
-                state as Boxed
-            }
-            BitOrder::Msb => {
-                let mut state = Box::new(DecodeState::<MsbBuffer>::new(size));
-                state.is_tiff = true;
-                state as Boxed
-            }
-        };
+        Configuration::with_tiff_size_switch(order, size).build()
+    }
 
-        Decoder { state }
+    fn from_configuration(configuration: &Configuration) -> Box<dyn Stateful + Send + 'static> {
+        struct NoYield;
+        struct YieldOnFull;
+
+        impl CodegenConstants for NoYield {
+            const YIELD_ON_FULL: bool = false;
+        }
+
+        impl CodegenConstants for YieldOnFull {
+            const YIELD_ON_FULL: bool = true;
+        }
+
+        type Boxed = Box<dyn Stateful + Send + 'static>;
+        match (configuration.order, configuration.yield_on_full) {
+            (BitOrder::Lsb, false) => {
+                let mut state =
+                    Box::new(DecodeState::<LsbBuffer, NoYield>::new(configuration.size));
+                state.is_tiff = configuration.tiff;
+                state as Boxed
+            }
+            (BitOrder::Lsb, true) => {
+                let mut state = Box::new(DecodeState::<LsbBuffer, YieldOnFull>::new(
+                    configuration.size,
+                ));
+                state.is_tiff = configuration.tiff;
+                state as Boxed
+            }
+            (BitOrder::Msb, false) => {
+                let mut state =
+                    Box::new(DecodeState::<MsbBuffer, NoYield>::new(configuration.size));
+                state.is_tiff = configuration.tiff;
+                state as Boxed
+            }
+            (BitOrder::Msb, true) => {
+                let mut state = Box::new(DecodeState::<MsbBuffer, YieldOnFull>::new(
+                    configuration.size,
+                ));
+                state.is_tiff = configuration.tiff;
+                state as Boxed
+            }
+        }
     }
 
     /// Decode some bytes from `inp` and write result to `out`.
@@ -554,7 +640,7 @@ impl IntoVec<'_> {
 #[path = "decode_into_async.rs"]
 mod impl_decode_into_async;
 
-impl<C: CodeBuffer> DecodeState<C> {
+impl<C: CodeBuffer, CgC: CodegenConstants> DecodeState<C, CgC> {
     fn new(min_size: u8) -> Self {
         DecodeState {
             min_size,
@@ -568,6 +654,7 @@ impl<C: CodeBuffer> DecodeState<C> {
             is_tiff: false,
             implicit_reset: true,
             code_buffer: CodeBuffer::new(min_size),
+            constants: core::marker::PhantomData,
         }
     }
 
@@ -584,7 +671,7 @@ impl<C: CodeBuffer> DecodeState<C> {
     }
 }
 
-impl<C: CodeBuffer> Stateful for DecodeState<C> {
+impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
     fn has_ended(&self) -> bool {
         self.has_ended
     }
@@ -743,7 +830,16 @@ impl<C: CodeBuffer> Stateful for DecodeState<C> {
         let mut last_decoded: Option<&[u8]> = None;
 
         while let Some((mut code, mut link)) = code_link.take() {
-            if out.is_empty() && !self.buffer.buffer().is_empty() {
+            let want_more_space = {
+                // We have more data buffered but not enough space to put it? We want fetch a next
+                // symbol if possible as in the case of it being a new symbol we can refer to the
+                // buffered output as the source for that symbol's meaning and do a memcpy. It
+                // would be correct to break here instead but then that symbol must be
+                // reconstructed by iterating the code table.
+                out.is_empty()
+            };
+
+            if want_more_space {
                 code_link = Some((code, link));
                 break;
             }
@@ -790,8 +886,18 @@ impl<C: CodeBuffer> Stateful for DecodeState<C> {
 
                 // Read the code length and check that we can decode directly into the out slice.
                 let len = self.table.depths[usize::from(*b)];
+
                 if out.len() < usize::from(len) {
                     break;
+                }
+
+                // We do exactly one more code (the one being inspected in the current iteration)
+                // after the 'burst'. When we want to break decoding precisely on the supplied
+                // buffer, we check if this is the last code to be decoded into it.
+                if CgC::YIELD_ON_FULL {
+                    if out.len() == usize::from(len) {
+                        break;
+                    }
                 }
 
                 bytes[burst_size - 1] = len;
@@ -954,7 +1060,7 @@ impl<C: CodeBuffer> Stateful for DecodeState<C> {
     }
 }
 
-impl<C: CodeBuffer> DecodeState<C> {
+impl<C: CodeBuffer, CgC: CodegenConstants> DecodeState<C, CgC> {
     fn next_symbol(&mut self, inp: &mut &[u8]) -> Option<Code> {
         self.code_buffer.next_symbol(inp)
     }

@@ -176,6 +176,51 @@ struct Full {
     char_continuation: [Code; 256],
 }
 
+/// Describes the static parameters for creating a decoder.
+#[derive(Clone, Debug)]
+pub struct Configuration {
+    order: BitOrder,
+    size: u8,
+    tiff: bool,
+}
+
+impl Configuration {
+    /// Create a configuration to decode with the specified bit order and symbol size.
+    ///
+    /// # Panics
+    ///
+    /// The `size` needs to be in the interval `2..=12`.
+    pub fn new(order: BitOrder, size: u8) -> Self {
+        super::assert_encode_size(size);
+        Configuration {
+            order,
+            size,
+            tiff: false,
+        }
+    }
+
+    /// Create a configuration for a TIFF compatible decoder.
+    ///
+    /// # Panics
+    ///
+    /// The `size` needs to be in the interval `2..=12`.
+    pub fn with_tiff_size_switch(order: BitOrder, size: u8) -> Self {
+        super::assert_encode_size(size);
+        Configuration {
+            order,
+            size,
+            tiff: true,
+        }
+    }
+
+    /// Create a new decoder with the define configuration.
+    pub fn build(self) -> Encoder {
+        Encoder {
+            state: Encoder::from_configuration(&self),
+        }
+    }
+}
+
 impl Encoder {
     /// Create a new encoder with the specified bit order and symbol size.
     ///
@@ -187,14 +232,7 @@ impl Encoder {
     ///
     /// The `size` needs to be in the interval `2..=12`.
     pub fn new(order: BitOrder, size: u8) -> Self {
-        type Boxed = Box<dyn Stateful + Send + 'static>;
-        super::assert_encode_size(size);
-        let state = match order {
-            BitOrder::Lsb => Box::new(EncodeState::<LsbBuffer>::new(size)) as Boxed,
-            BitOrder::Msb => Box::new(EncodeState::<MsbBuffer>::new(size)) as Boxed,
-        };
-
-        Encoder { state }
+        Configuration::new(order, size).build()
     }
 
     /// Create a TIFF compatible encoder with the specified bit order and symbol size.
@@ -207,22 +245,22 @@ impl Encoder {
     ///
     /// The `size` needs to be in the interval `2..=12`.
     pub fn with_tiff_size_switch(order: BitOrder, size: u8) -> Self {
-        type Boxed = Box<dyn Stateful + Send + 'static>;
-        super::assert_encode_size(size);
-        let state = match order {
+        Configuration::with_tiff_size_switch(order, size).build()
+    }
+
+    fn from_configuration(cfg: &Configuration) -> Box<dyn Stateful + Send + 'static> {
+        match cfg.order {
             BitOrder::Lsb => {
-                let mut state = Box::new(EncodeState::<LsbBuffer>::new(size));
-                state.is_tiff = true;
-                state as Boxed
+                let mut state = EncodeState::<LsbBuffer>::new(cfg.size);
+                state.is_tiff = cfg.tiff;
+                Box::new(state)
             }
             BitOrder::Msb => {
-                let mut state = Box::new(EncodeState::<MsbBuffer>::new(size));
-                state.is_tiff = true;
-                state as Boxed
+                let mut state = EncodeState::<MsbBuffer>::new(cfg.size);
+                state.is_tiff = cfg.tiff;
+                Box::new(state)
             }
-        };
-
-        Encoder { state }
+        }
     }
 
     /// Encode some bytes from `inp` into `out`.

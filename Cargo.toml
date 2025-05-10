@@ -82,5 +82,9 @@ required-features = ["alloc"]
 name = "implicit_reset"
 required-features = ["std"]
 
+[[test]]
+name = "end_of_buffer"
+required-features = ["alloc"]
+
 [package.metadata.docs.rs]
 all-features = true
