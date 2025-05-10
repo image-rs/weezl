@@ -86,6 +86,13 @@ trait Stateful {
 struct Link {
     prev: Code,
     byte: u8,
+    first: u8,
+}
+
+#[derive(Clone)]
+struct DerivationBase {
+    code: Code,
+    first: u8,
 }
 
 #[derive(Default)]
@@ -141,7 +148,7 @@ struct DecodeState<CodeBuffer, Constants: CodegenConstants> {
     /// The buffer of decoded data.
     buffer: Buffer,
     /// The link which we are still decoding and its original code.
-    last: Option<(Code, Link)>,
+    last: Option<DerivationBase>,
     /// The next code entry.
     next_code: Code,
     /// Code to reset all tables.
@@ -780,7 +787,10 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
 
                                 self.buffer.fill_reconstruct(&self.table, init_code);
                                 let link = self.table.at(init_code).clone();
-                                code_link = Some((init_code, link));
+                                code_link = Some(DerivationBase {
+                                    code: init_code,
+                                    first: link.first,
+                                });
                             } else {
                                 // We require an explicit reset.
                                 status = Err(LzwError::InvalidCode);
@@ -789,7 +799,10 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                             // Reconstruct the first code in the buffer.
                             self.buffer.fill_reconstruct(&self.table, init_code);
                             let link = self.table.at(init_code).clone();
-                            code_link = Some((init_code, link));
+                            code_link = Some(DerivationBase {
+                                code: init_code,
+                                first: link.first,
+                            });
                         }
                     }
                 }
@@ -800,9 +813,9 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
 
         // Track an empty `burst` (see below) means we made no progress.
         let mut burst_required_for_progress = false;
+
         // Restore the previous state, if any.
-        if let Some((code, link)) = code_link.take() {
-            code_link = Some((code, link));
+        if code_link.is_some() {
             let remain = self.buffer.buffer();
             // Check if we can fully finish the buffer.
             if remain.len() > out.len() {
@@ -837,7 +850,7 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
         // A special reference to out slice which holds the last decoded symbol.
         let mut last_decoded: Option<&[u8]> = None;
 
-        while let Some((mut code, mut link)) = code_link.take() {
+        while let Some(mut deriv) = code_link.take() {
             let want_more_space = {
                 // We have more data buffered but not enough space to put it? We want fetch a next
                 // symbol if possible as in the case of it being a new symbol we can refer to the
@@ -848,7 +861,7 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
             };
 
             if want_more_space {
-                code_link = Some((code, link));
+                code_link = Some(deriv);
                 break;
             }
 
@@ -917,7 +930,7 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                 if burst_required_for_progress {
                     status = Ok(LzwStatus::NoProgress);
                 }
-                code_link = Some((code, link));
+                code_link = Some(deriv);
                 break;
             }
 
@@ -940,9 +953,9 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                 // TODO: this pushes into a Vec, maybe we can make this cleaner.
                 // Theoretically this has a branch and llvm tends to be flaky with code layout for
                 // the case of requiring an allocation (which can't occur in practice).
-                let new_link = self.table.derive(&link, cha, code);
-                code = burst;
-                link = new_link;
+                self.table.derive(&deriv, cha);
+                deriv.code = burst;
+                deriv.first = cha;
             }
 
             // Now handle the special codes.
@@ -966,7 +979,7 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
             }
 
             let required_len = if new_code == self.next_code {
-                self.table.depths[usize::from(code)] + 1
+                self.table.depths[usize::from(deriv.code)] + 1
             } else {
                 self.table.depths[usize::from(new_code)]
             };
@@ -1028,11 +1041,10 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                 last_decoded = Some(target);
             }
 
-            let new_link;
             // Each newly read code creates one new code/link based on the preceding code if we
             // have enough space to put it there.
             if !self.table.is_full() {
-                let link = self.table.derive(&link, cha, code);
+                self.table.derive(&deriv, cha);
 
                 if self.next_code == self.code_buffer.max_code() - Code::from(self.is_tiff)
                     && self.code_buffer.code_size() < MAX_CODESIZE
@@ -1041,15 +1053,13 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                 }
 
                 self.next_code += 1;
-                new_link = link;
-            } else {
-                // It's actually quite likely that the next code will be a reset but just in case.
-                // FIXME: this path hasn't been tested very well.
-                new_link = link.clone();
             }
 
             // store the information on the decoded word.
-            code_link = Some((new_code, new_link));
+            code_link = Some(DerivationBase {
+                code: new_code,
+                first: cha,
+            });
 
             // Can't make any more progress with decoding.
             if is_in_buffer {
@@ -1387,17 +1397,18 @@ impl Table {
         self.inner.len() >= MAX_ENTRIES
     }
 
-    fn derive(&mut self, from: &Link, byte: u8, prev: Code) -> Link {
-        let link = from.derive(byte, prev);
-        let depth = self.depths[usize::from(prev)] + 1;
-        self.inner.push(link.clone());
+    fn derive(&mut self, from: &DerivationBase, byte: u8) {
+        let link = from.derive(byte);
+        let depth = self.depths[usize::from(from.code)] + 1;
+        self.inner.push(link);
         self.depths.push(depth);
-        link
     }
 
     fn reconstruct(&self, code: Code, out: &mut [u8]) -> u8 {
         let mut code_iter = code;
         let table = &self.inner[..=usize::from(code)];
+        let first = table[usize::from(code)].first;
+
         let len = code_iter;
         for ch in out.iter_mut().rev() {
             //(code, cha) = self.table[k as usize];
@@ -1408,19 +1419,30 @@ impl Table {
             code_iter = core::cmp::min(len, entry.prev);
             *ch = entry.byte;
         }
-        out[0]
+
+        first
     }
 }
 
 impl Link {
     fn base(byte: u8) -> Self {
-        Link { prev: 0, byte }
+        Link {
+            prev: 0,
+            byte,
+            first: byte,
+        }
     }
+}
 
+impl DerivationBase {
     // TODO: this has self type to make it clear we might depend on the old in a future
     // optimization. However, that has no practical purpose right now.
-    fn derive(&self, byte: u8, prev: Code) -> Self {
-        Link { prev, byte }
+    fn derive(&self, byte: u8) -> Link {
+        Link {
+            prev: self.code,
+            byte,
+            first: self.first,
+        }
     }
 }
 
