@@ -866,19 +866,30 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                 break;
             }
 
-            let mut burst_size = 0;
             // Ensure the code buffer is full, we're about to request some codes.
             // Note that this also ensures at least one code is in the buffer if any input is left.
             self.refill_bits(&mut inp);
             let cnt = self.code_buffer.peek_bits(&mut burst);
+
+            // No code left in the buffer, and no more bytes to refill the buffer.
+            if cnt == 0 {
+                if burst_required_for_progress {
+                    status = Ok(LzwStatus::NoProgress);
+                }
+                code_link = Some(deriv);
+                break;
+            }
+
+            let mut burst_size = 0;
+            debug_assert!(self.code_buffer.max_code() - Code::from(self.is_tiff) >= self.next_code);
+            let left_before_size_switch = (self.code_buffer.max_code() - Code::from(self.is_tiff))
+                .wrapping_sub(self.next_code);
 
             // A burst is a sequence of decodes that are completely independent of each other. This
             // is the case if neither is an end code, a clear code, or a next code, i.e. we have
             // all of them in the decoding table and thus known their depths, and additionally if
             // we can decode them directly into the output buffer.
             for b in &burst[..cnt] {
-                let read_code = *b;
-
                 // We can commit the previous burst code, and will take a slice from the output
                 // buffer. This also avoids the bounds check in the tight loop later.
                 if burst_size > 0 {
@@ -889,15 +900,13 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                 }
 
                 // Check that we don't overflow the code size with all codes we burst decode.
-                if let Some(potential_code) = self.next_code.checked_add(burst_size as u16) {
-                    burst_size += 1;
-                    if potential_code == self.code_buffer.max_code() - Code::from(self.is_tiff) {
-                        break;
-                    }
-                } else {
-                    // next_code overflowed
+                burst_size += 1;
+
+                if burst_size > usize::from(left_before_size_switch) {
                     break;
                 }
+
+                let read_code = *b;
 
                 // A burst code can't be special.
                 if read_code == self.clear_code
@@ -924,15 +933,6 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                 }
 
                 burst_byte_len[burst_size - 1] = len;
-            }
-
-            // No code left, and no more bytes to fill the buffer.
-            if burst_size == 0 {
-                if burst_required_for_progress {
-                    status = Ok(LzwStatus::NoProgress);
-                }
-                code_link = Some(deriv);
-                break;
             }
 
             self.code_buffer.consume_bits(burst_size as u8);
