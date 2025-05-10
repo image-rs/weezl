@@ -920,8 +920,11 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
             // breaks and a loop end condition above. That may be a speed advantage?
             let (&new_code, burst) = burst[..burst_size].split_last().unwrap();
 
-            // The very tight loop for restoring the actual burst.
-            for (&burst, target) in burst.iter().zip(&mut target[..burst_size - 1]) {
+            // The very tight loop for restoring the actual burst. These can be reconstructed in
+            // parallel since none of them depend on a prior constructed. Only the derivation of
+            // new codes is not parallel.
+            let burst_targets = &mut target[..burst_size - 1];
+            for (&burst, target) in burst.iter().zip(&mut *burst_targets) {
                 let cha = self.table.reconstruct(burst, target);
                 // TODO: this pushes into a Vec, maybe we can make this cleaner.
                 // Theoretically this has a branch and llvm tends to be flaky with code layout for
@@ -930,12 +933,6 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                 self.next_code += 1;
                 code = burst;
                 link = new_link;
-            }
-
-            // Update the slice holding the last decoded word.
-            if let Some(new_last) = target[..burst_size - 1].last_mut() {
-                let slice = core::mem::replace(new_last, &mut []);
-                last_decoded = Some(&*slice);
             }
 
             // Now handle the special codes.
@@ -964,12 +961,25 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                 self.table.depths[usize::from(new_code)]
             };
 
+            // We need the decoded data of the new code if it is the `next_code`. This is the
+            // special case of LZW decoding that is demonstrated by `banana` (or form cScSc). In
+            // all other cases we only need the first character of the decoded data.
+            let have_next_code = new_code == self.next_code;
+
+            // Update the slice holding the last decoded word.
+            if have_next_code {
+                // If we did not have any burst code, we still hold that slice in the buffer.
+                if let Some(new_last) = target[..burst_size - 1].last_mut() {
+                    let slice = core::mem::replace(new_last, &mut []);
+                    last_decoded = Some(&*slice);
+                }
+            }
+
             let cha;
-            let is_in_buffer;
+            let is_in_buffer = usize::from(required_len) > out.len();
             // Check if we will need to store our current state into the buffer.
-            if usize::from(required_len) > out.len() {
-                is_in_buffer = true;
-                if new_code == self.next_code {
+            if is_in_buffer {
+                if have_next_code {
                     // last_decoded will be Some if we have restored any code into the out slice.
                     // Otherwise it will still be present in the buffer.
                     if let Some(last) = last_decoded.take() {
@@ -985,11 +995,10 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                     cha = self.buffer.fill_reconstruct(&self.table, new_code);
                 }
             } else {
-                is_in_buffer = false;
                 let (target, tail) = out.split_at_mut(usize::from(required_len));
                 out = tail;
 
-                if new_code == self.next_code {
+                if have_next_code {
                     // Reconstruct high.
                     let source = match last_decoded.take() {
                         Some(last) => last,
