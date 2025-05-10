@@ -931,15 +931,16 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
 
             // The very tight loop for restoring the actual burst. These can be reconstructed in
             // parallel since none of them depend on a prior constructed. Only the derivation of
-            // new codes is not parallel.
+            // new codes is not parallel. There are no size changes here either.
             let burst_targets = &mut target[..burst_size - 1];
+            self.next_code += burst_targets.len() as u16;
+
             for (&burst, target) in burst.iter().zip(&mut *burst_targets) {
                 let cha = self.table.reconstruct(burst, target);
                 // TODO: this pushes into a Vec, maybe we can make this cleaner.
                 // Theoretically this has a branch and llvm tends to be flaky with code layout for
                 // the case of requiring an allocation (which can't occur in practice).
                 let new_link = self.table.derive(&link, cha, code);
-                self.next_code += 1;
                 code = burst;
                 link = new_link;
             }
