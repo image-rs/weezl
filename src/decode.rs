@@ -122,7 +122,7 @@ trait CodeBuffer {
     /// Refill the internal buffer.
     fn refill_bits(&mut self, inp: &mut &[u8]);
 
-    fn peek_bits(&self, code: &mut [Code]) -> usize;
+    fn peek_bits(&self, code: &mut [Code; BURST]) -> usize;
     fn consume_bits(&mut self, code_cnt: u8);
 
     fn max_code(&self) -> Code;
@@ -160,7 +160,10 @@ struct DecodeState<CodeBuffer, Constants: CodegenConstants> {
     constants: core::marker::PhantomData<Constants>,
 }
 
-const BURST: usize = 9;
+// We have a buffer of 64 bits. So at max size at most 5 units can be read at once without
+// refilling the buffer. At smaller code sizes there are more. We tune for 6 here, by slight
+// experimentation. This may be an architecture dependent constant.
+const BURST: usize = 6;
 
 struct Buffer {
     bytes: Box<[u8]>,
@@ -1150,7 +1153,7 @@ impl CodeBuffer for MsbBuffer {
         self.bits += new_bits;
     }
 
-    fn peek_bits(&self, code: &mut [Code]) -> usize {
+    fn peek_bits(&self, code: &mut [Code; BURST]) -> usize {
         let mut bit_buffer = self.bit_buffer;
         let mask = u64::from(self.code_mask);
         let mut consumed = 0;
@@ -1253,7 +1256,7 @@ impl CodeBuffer for LsbBuffer {
         self.bits += new_bits;
     }
 
-    fn peek_bits(&self, code: &mut [Code]) -> usize {
+    fn peek_bits(&self, code: &mut [Code; BURST]) -> usize {
         let mut bit_buffer = self.bit_buffer;
         let mask = u64::from(self.code_mask);
         let mut consumed = 0;
