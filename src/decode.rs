@@ -116,12 +116,15 @@ trait CodeBuffer {
     fn new(min_size: u8) -> Self;
     fn reset(&mut self, min_size: u8);
     fn bump_code_size(&mut self);
+
     /// Retrieve the next symbol, refilling if necessary.
     fn next_symbol(&mut self, inp: &mut &[u8]) -> Option<Code>;
     /// Refill the internal buffer.
     fn refill_bits(&mut self, inp: &mut &[u8]);
-    /// Get the next buffered code word.
-    fn get_bits(&mut self) -> Option<Code>;
+
+    fn peek_bits(&self, code: &mut [Code]) -> usize;
+    fn consume_bits(&mut self, code_cnt: u8);
+
     fn max_code(&self) -> Code;
     fn code_size(&self) -> u8;
 }
@@ -850,16 +853,14 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
             // Ensure the code buffer is full, we're about to request some codes.
             // Note that this also ensures at least one code is in the buffer if any input is left.
             self.refill_bits(&mut inp);
+            let cnt = self.code_buffer.peek_bits(&mut burst);
+
             // A burst is a sequence of decodes that are completely independent of each other. This
             // is the case if neither is an end code, a clear code, or a next code, i.e. we have
             // all of them in the decoding table and thus known their depths, and additionally if
             // we can decode them directly into the output buffer.
-            for b in &mut burst {
-                // TODO: does it actually make a perf difference to avoid reading new bits here?
-                *b = match self.get_bits() {
-                    None => break,
-                    Some(code) => code,
-                };
+            for b in &burst[..cnt] {
+                let read_code = *b;
 
                 // We can commit the previous burst code, and will take a slice from the output
                 // buffer. This also avoids the bounds check in the tight loop later.
@@ -882,12 +883,15 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                 }
 
                 // A burst code can't be special.
-                if *b == self.clear_code || *b == self.end_code || *b >= self.next_code {
+                if read_code == self.clear_code
+                    || read_code == self.end_code
+                    || read_code >= self.next_code
+                {
                     break;
                 }
 
                 // Read the code length and check that we can decode directly into the out slice.
-                let len = self.table.depths[usize::from(*b)];
+                let len = self.table.depths[usize::from(read_code)];
 
                 if out.len() < usize::from(len) {
                     break;
@@ -913,6 +917,8 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                 code_link = Some((code, link));
                 break;
             }
+
+            self.code_buffer.consume_bits(burst_size as u8);
 
             burst_required_for_progress = false;
             // Note that the very last code in the burst buffer doesn't actually belong to the
@@ -1005,6 +1011,8 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                         None => &self.buffer.bytes[..self.buffer.write_mark],
                     };
 
+                    // We don't *actually* expect the unwrap to happen. Each source is at least 1
+                    // byte long. But llvm doesn't know this (too much indirect loads and cases).
                     cha = source.get(0).map(|x| *x).unwrap_or(0);
                     target[..source.len()].copy_from_slice(source);
                     target[source.len()..][0] = cha;
@@ -1084,10 +1092,6 @@ impl<C: CodeBuffer, CgC: CodegenConstants> DecodeState<C, CgC> {
     fn refill_bits(&mut self, inp: &mut &[u8]) {
         self.code_buffer.refill_bits(inp)
     }
-
-    fn get_bits(&mut self) -> Option<Code> {
-        self.code_buffer.get_bits()
-    }
 }
 
 impl CodeBuffer for MsbBuffer {
@@ -1110,7 +1114,15 @@ impl CodeBuffer for MsbBuffer {
             self.refill_bits(inp);
         }
 
-        self.get_bits()
+        if self.bits < self.code_size {
+            return None;
+        }
+
+        let mask = u64::from(self.code_mask);
+        let rotbuf = self.bit_buffer.rotate_left(self.code_size.into());
+        self.bit_buffer = rotbuf & !mask;
+        self.bits -= self.code_size;
+        Some((rotbuf & mask) as u16)
     }
 
     fn bump_code_size(&mut self) {
@@ -1138,16 +1150,42 @@ impl CodeBuffer for MsbBuffer {
         self.bits += new_bits;
     }
 
-    fn get_bits(&mut self) -> Option<Code> {
-        if self.bits < self.code_size {
-            return None;
+    fn peek_bits(&self, code: &mut [Code]) -> usize {
+        let mut bit_buffer = self.bit_buffer;
+        let mask = u64::from(self.code_mask);
+        let mut consumed = 0;
+        let mut cnt = 0;
+
+        for b in code {
+            let consumed_after = consumed + self.code_size;
+            if consumed_after > self.bits {
+                break;
+            }
+
+            cnt += 1;
+            consumed = consumed_after;
+
+            let rotbuf = bit_buffer.rotate_left(self.code_size.into());
+            *b = (rotbuf & mask) as u16;
+            // The read bits are 'appended' but we never interpret those appended bits.
+            bit_buffer = rotbuf;
         }
 
-        let mask = u64::from(self.code_mask);
-        let rotbuf = self.bit_buffer.rotate_left(self.code_size.into());
-        self.bit_buffer = rotbuf & !mask;
-        self.bits -= self.code_size;
-        Some((rotbuf & mask) as u16)
+        cnt
+    }
+
+    fn consume_bits(&mut self, code_cnt: u8) {
+        let bits = self.code_size * code_cnt;
+        debug_assert!(bits <= self.bits);
+
+        if bits >= self.bits {
+            self.bit_buffer = 0;
+        } else {
+            // bits < self.bits so this must be smaller than the number size.
+            self.bit_buffer = self.bit_buffer << bits;
+        }
+
+        self.bits = self.bits.wrapping_sub(bits);
     }
 
     fn max_code(&self) -> Code {
@@ -1179,7 +1217,15 @@ impl CodeBuffer for LsbBuffer {
             self.refill_bits(inp);
         }
 
-        self.get_bits()
+        if self.bits < self.code_size {
+            return None;
+        }
+
+        let mask = u64::from(self.code_mask);
+        let code = self.bit_buffer & mask;
+        self.bit_buffer >>= self.code_size;
+        self.bits -= self.code_size;
+        Some(code as u16)
     }
 
     fn bump_code_size(&mut self) {
@@ -1207,16 +1253,40 @@ impl CodeBuffer for LsbBuffer {
         self.bits += new_bits;
     }
 
-    fn get_bits(&mut self) -> Option<Code> {
-        if self.bits < self.code_size {
-            return None;
+    fn peek_bits(&self, code: &mut [Code]) -> usize {
+        let mut bit_buffer = self.bit_buffer;
+        let mask = u64::from(self.code_mask);
+        let mut consumed = 0;
+        let mut cnt = 0;
+
+        for b in code {
+            let consumed_after = consumed + self.code_size;
+            if consumed_after > self.bits {
+                break;
+            }
+
+            cnt += 1;
+            consumed = consumed_after;
+
+            *b = (bit_buffer & mask) as u16;
+            bit_buffer = bit_buffer >> self.code_size;
         }
 
-        let mask = u64::from(self.code_mask);
-        let code = self.bit_buffer & mask;
-        self.bit_buffer >>= self.code_size;
-        self.bits -= self.code_size;
-        Some(code as u16)
+        cnt
+    }
+
+    fn consume_bits(&mut self, code_cnt: u8) {
+        let bits = self.code_size * code_cnt;
+        debug_assert!(bits <= self.bits);
+
+        if bits >= self.bits {
+            self.bit_buffer = 0;
+        } else {
+            // bits < self.bits so this must be smaller than the number size.
+            self.bit_buffer = self.bit_buffer >> bits;
+        }
+
+        self.bits = self.bits.wrapping_sub(bits);
     }
 
     fn max_code(&self) -> Code {
