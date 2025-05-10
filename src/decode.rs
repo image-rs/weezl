@@ -846,6 +846,7 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
         // can't infect the main struct with a lifetime.
         let mut burst = [0; BURST];
         let mut burst_byte_len = [0u16; BURST];
+        let mut burst_byte = [0u8; BURST];
         let mut target: [&mut [u8]; BURST] = Default::default();
         // A special reference to out slice which holds the last decoded symbol.
         let mut last_decoded: Option<&[u8]> = None;
@@ -948,15 +949,16 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
             let burst_targets = &mut target[..burst_size - 1];
             self.next_code += burst_targets.len() as u16;
 
-            for (&burst, target) in burst.iter().zip(&mut *burst_targets) {
-                let cha = self.table.reconstruct(burst, target);
-                // TODO: this pushes into a Vec, maybe we can make this cleaner.
-                // Theoretically this has a branch and llvm tends to be flaky with code layout for
-                // the case of requiring an allocation (which can't occur in practice).
-                self.table.derive(&deriv, cha);
-                deriv.code = burst;
-                deriv.first = cha;
+            for ((&burst, target), byte) in
+                burst.iter().zip(&mut *burst_targets).zip(&mut burst_byte)
+            {
+                *byte = self.table.reconstruct(burst, target);
             }
+
+            // TODO: this pushes into a Vec, maybe we can make this cleaner.
+            // Theoretically this has a branch and llvm tends to be flaky with code layout for
+            // the case of requiring an allocation (which can't occur in practice).
+            self.table.derive_burst(&mut deriv, burst, &burst_byte[..]);
 
             // Now handle the special codes.
             if new_code == self.clear_code {
@@ -1402,6 +1404,25 @@ impl Table {
         let depth = self.depths[usize::from(from.code)] + 1;
         self.inner.push(link);
         self.depths.push(depth);
+    }
+
+    // Derive multiple codes in a row, where each base is guaranteed to already exist.
+    fn derive_burst(&mut self, from: &mut DerivationBase, burst: &[Code], first: &[u8]) {
+        let mut depth_of = from.code;
+        // Note that false data dependency we want to get rid of!
+        for &code in burst {
+            let depth = self.depths[usize::from(depth_of)] + 1;
+            self.depths.push(depth);
+            depth_of = code;
+        }
+
+        let extensions = burst.iter().zip(first);
+        self.inner.extend(extensions.map(|(&code, &first)| {
+            let link = from.derive(first);
+            from.code = code;
+            from.first = first;
+            link
+        }));
     }
 
     fn reconstruct(&self, code: Code, out: &mut [u8]) -> u8 {
