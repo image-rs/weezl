@@ -157,6 +157,8 @@ struct DecodeState<CodeBuffer, Constants: CodegenConstants> {
     constants: core::marker::PhantomData<Constants>,
 }
 
+const BURST: usize = 9;
+
 struct Buffer {
     bytes: Box<[u8]>,
     read_mark: usize,
@@ -823,9 +825,9 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
         // TODO: maybe we can make it part of the state but it's dubious if that really gives a
         // benefit over stack usage? Also the slices stored here would need some treatment as we
         // can't infect the main struct with a lifetime.
-        let mut burst = [0; 6];
-        let mut bytes = [0u16; 6];
-        let mut target: [&mut [u8]; 6] = Default::default();
+        let mut burst = [0; BURST];
+        let mut burst_byte_len = [0u16; BURST];
+        let mut target: [&mut [u8]; BURST] = Default::default();
         // A special reference to out slice which holds the last decoded symbol.
         let mut last_decoded: Option<&[u8]> = None;
 
@@ -862,7 +864,7 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                 // We can commit the previous burst code, and will take a slice from the output
                 // buffer. This also avoids the bounds check in the tight loop later.
                 if burst_size > 0 {
-                    let len = bytes[burst_size - 1];
+                    let len = burst_byte_len[burst_size - 1];
                     let (into, tail) = out.split_at_mut(usize::from(len));
                     target[burst_size - 1] = into;
                     out = tail;
@@ -900,7 +902,7 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                     }
                 }
 
-                bytes[burst_size - 1] = len;
+                burst_byte_len[burst_size - 1] = len;
             }
 
             // No code left, and no more bytes to fill the buffer.
