@@ -202,11 +202,14 @@ impl Configuration {
 
     /// Immediately yield to the caller when the decoder buffer is full.
     ///
-    /// This can be used when dealing with "relaxed" stream interpretation that may not contain an
-    /// explicit EOF but instead expect the decoder to stop fetching symbols when some out-of-band
-    /// specified length of the decoded text has been reached. Symbols afterwards can not be
-    /// expected to be valid. The decoder will yield to the caller instead of returning an error by
-    /// interpreting the following bit-stream.
+    /// This can be used for `libtiff` compatibility. It will use a "relaxed" stream interpretation
+    /// that need not contain an explicit EOF. Instead, the decoder is expected to stop fetching
+    /// symbols when some out-of-band specified length of the decoded text has been reached. The
+    /// caller indicates this maximum length through the available output buffer space.
+    ///
+    /// Symbols afterwards must not be expected to be valid. On filling the output buffer space
+    /// completely, the decoder will return immediately to the caller instead of potentially
+    /// interpreting the following bit-stream (and returning an error on doing so).
     ///
     /// Default: `false`.
     pub fn with_yield_on_full_buffer(self, do_yield: bool) -> Self {
