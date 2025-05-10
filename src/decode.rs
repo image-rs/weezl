@@ -1004,9 +1004,10 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                         Some(last) => last,
                         None => &self.buffer.bytes[..self.buffer.write_mark],
                     };
-                    cha = source[0];
+
+                    cha = source.get(0).map(|x| *x).unwrap_or(0);
                     target[..source.len()].copy_from_slice(source);
-                    target[source.len()..][0] = source[0];
+                    target[source.len()..][0] = cha;
                 } else {
                     cha = self.table.reconstruct(new_code, target);
                 }
