@@ -1,3 +1,15 @@
+## Version 0.1.9
+
+- Increased decoding throughput by 3—30% depending on CPU and data.
+- Added `{encode,decode}::Configuration` as builder types for their respective
+  module. They can be cheaply cloned.
+- Added `decode::Configuration::with_yield_on_full_buffer` to explicitly opt-in
+  to libtiff compatibility. The decoder will not read or interpret further
+  symbols of the decoding stream when the output buffer is full. This enables a
+  caller to stop fetching symbols and elide an end of stream marker based on
+  out-of-band length information. The decoder might otherwise error, trying to
+  interpret data that does not belong to the stream.
+
 ## Version 0.1.8
 
 - Fixed incorrect state after `Decoder::reset`
