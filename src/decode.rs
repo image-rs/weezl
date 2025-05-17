@@ -812,7 +812,7 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
         };
 
         // Track an empty `burst` (see below) means we made no progress.
-        let mut burst_required_for_progress = false;
+        let mut have_yet_to_decode_data = false;
 
         // Restore the previous state, if any.
         if code_link.is_some() {
@@ -820,6 +820,8 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
             // Check if we can fully finish the buffer.
             if remain.len() > out.len() {
                 if out.is_empty() {
+                    // This also implies the buffer is _not_ empty and we will not enter any
+                    // decoding loop.
                     status = Ok(LzwStatus::NoProgress);
                 } else {
                     out.copy_from_slice(&remain[..out.len()]);
@@ -828,244 +830,291 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                 }
             } else if remain.is_empty() {
                 status = Ok(LzwStatus::NoProgress);
-                burst_required_for_progress = true;
+                have_yet_to_decode_data = true;
             } else {
                 let consumed = remain.len();
                 out[..consumed].copy_from_slice(remain);
                 self.buffer.consume(consumed);
                 out = &mut out[consumed..];
-                burst_required_for_progress = false;
+                have_yet_to_decode_data = false;
             }
         }
 
-        // The tracking state for a burst.
-        // These are actually initialized later but compiler wasn't smart enough to fully optimize
-        // out the init code so that appears outside th loop.
-        // TODO: maybe we can make it part of the state but it's dubious if that really gives a
-        // benefit over stack usage? Also the slices stored here would need some treatment as we
-        // can't infect the main struct with a lifetime.
-        let mut burst = [0; BURST];
-        let mut burst_byte_len = [0u16; BURST];
-        let mut burst_byte = [0u8; BURST];
-        let mut target: [&mut [u8]; BURST] = Default::default();
         // A special reference to out slice which holds the last decoded symbol.
         let mut last_decoded: Option<&[u8]> = None;
 
-        while let Some(mut deriv) = code_link.take() {
-            let want_more_space = {
-                // We have more data buffered but not enough space to put it? We want fetch a next
-                // symbol if possible as in the case of it being a new symbol we can refer to the
-                // buffered output as the source for that symbol's meaning and do a memcpy. It
-                // would be correct to break here instead but then that symbol must be
-                // reconstructed by iterating the code table.
-                out.is_empty()
-            };
+        if self.buffer.buffer().is_empty() {
+            // Hot loop that writes data to the output as long as we can do so directly from the
+            // input stream. As an invariant of this block we did not need to use the buffer to
+            // store a decoded code word. Testing the condition ahead of time avoids a test in the
+            // loop body since every code path where the buffer is filled already breaks.
+            //
+            // In a previous iteration of the code we trusted compiler optimization to work this
+            // out but it seems that it does not. Another edit hidden behind some performance work
+            // then edited out the check, inadvertently changing the behavior for callers that
+            // relied on being able to provide an empty output buffer and still receiving a useful
+            // signal about the state of the stream.
 
-            if want_more_space {
-                code_link = Some(deriv);
-                break;
-            }
+            // A burst is a sequence of code words that are independently decoded, i.e. they do not
+            // change the state of the decoder in ways that would influence the interpretation of
+            // each other. That is: they are not special symbols, they do not make us increase the
+            // code size, they are each codes already in the tree before the burst.
+            //
+            // The tracking state for a burst. These are actually initialized later but compiler
+            // wasn't smart enough to fully optimize out the init code so that appears outside the
+            // loop.
+            let mut burst = [0; BURST];
+            let mut burst_byte_len = [0u16; BURST];
+            let mut burst_byte = [0u8; BURST];
+            let mut target: [&mut [u8]; BURST] = Default::default();
 
-            // Ensure the code buffer is full, we're about to request some codes.
-            // Note that this also ensures at least one code is in the buffer if any input is left.
-            self.refill_bits(&mut inp);
-            let cnt = self.code_buffer.peek_bits(&mut burst);
-
-            // No code left in the buffer, and no more bytes to refill the buffer.
-            if cnt == 0 {
-                if burst_required_for_progress {
-                    status = Ok(LzwStatus::NoProgress);
-                }
-                code_link = Some(deriv);
-                break;
-            }
-
-            let mut burst_size = 0;
-            debug_assert!(self.code_buffer.max_code() - Code::from(self.is_tiff) >= self.next_code);
-            let left_before_size_switch = (self.code_buffer.max_code() - Code::from(self.is_tiff))
-                .wrapping_sub(self.next_code);
-
-            // A burst is a sequence of decodes that are completely independent of each other. This
-            // is the case if neither is an end code, a clear code, or a next code, i.e. we have
-            // all of them in the decoding table and thus known their depths, and additionally if
-            // we can decode them directly into the output buffer.
-            for b in &burst[..cnt] {
-                // We can commit the previous burst code, and will take a slice from the output
-                // buffer. This also avoids the bounds check in the tight loop later.
-                if burst_size > 0 {
-                    let len = burst_byte_len[burst_size - 1];
-                    let (into, tail) = out.split_at_mut(usize::from(len));
-                    target[burst_size - 1] = into;
-                    out = tail;
-                }
-
-                // Check that we don't overflow the code size with all codes we burst decode.
-                burst_size += 1;
-
-                if burst_size > usize::from(left_before_size_switch) {
+            loop {
+                // In particular, we *also* break if the output buffer is still empty. Especially
+                // when the output parameter was an empty slice, we must try to fetch at least one
+                // code but with YIELD_ON_FULL we do not.
+                if CgC::YIELD_ON_FULL && out.is_empty() {
                     break;
                 }
 
-                let read_code = *b;
-
-                // A burst code can't be special.
-                if read_code == self.clear_code
-                    || read_code == self.end_code
-                    || read_code >= self.next_code
-                {
-                    break;
-                }
-
-                // Read the code length and check that we can decode directly into the out slice.
-                let len = self.table.depths[usize::from(read_code)];
-
-                if out.len() < usize::from(len) {
-                    break;
-                }
-
-                // We do exactly one more code (the one being inspected in the current iteration)
-                // after the 'burst'. When we want to break decoding precisely on the supplied
-                // buffer, we check if this is the last code to be decoded into it.
-                if CgC::YIELD_ON_FULL {
-                    if out.len() == usize::from(len) {
+                let mut deriv = match code_link.take() {
+                    Some(link) => link,
+                    None => {
+                        // TODO: we do not need to break here. This does not indicate that the buffer
+                        // has been filled, rather it indicates we have reset the state. The next code
+                        // should be part of the initial alphabet. However the first code is special in
+                        // the sense of not creating a new code itself. This is handled correctly in
+                        // the initialization prior to the loop; and in particular that handling as
+                        // written currently relies on putting it into the buffer; so handling it we
+                        // would need to ensure that either the buffer is fully cleared after its use,
+                        // or use another implementation of handling that first code.
                         break;
                     }
-                }
+                };
 
-                burst_byte_len[burst_size - 1] = len;
-            }
+                // Ensure the code buffer is full, we're about to request some codes.
+                // Note that this also ensures at least one code is in the buffer if any input is left.
+                self.refill_bits(&mut inp);
+                let cnt = self.code_buffer.peek_bits(&mut burst);
 
-            self.code_buffer.consume_bits(burst_size as u8);
-
-            burst_required_for_progress = false;
-            // Note that the very last code in the burst buffer doesn't actually belong to the
-            // burst itself. TODO: sometimes it could, we just don't differentiate between the
-            // breaks and a loop end condition above. That may be a speed advantage?
-            let (&new_code, burst) = burst[..burst_size].split_last().unwrap();
-
-            // The very tight loop for restoring the actual burst. These can be reconstructed in
-            // parallel since none of them depend on a prior constructed. Only the derivation of
-            // new codes is not parallel. There are no size changes here either.
-            let burst_targets = &mut target[..burst_size - 1];
-            self.next_code += burst_targets.len() as u16;
-
-            for ((&burst, target), byte) in
-                burst.iter().zip(&mut *burst_targets).zip(&mut burst_byte)
-            {
-                *byte = self.table.reconstruct(burst, target);
-            }
-
-            // TODO: this pushes into a Vec, maybe we can make this cleaner.
-            // Theoretically this has a branch and llvm tends to be flaky with code layout for
-            // the case of requiring an allocation (which can't occur in practice).
-            self.table.derive_burst(&mut deriv, burst, &burst_byte[..]);
-
-            // Now handle the special codes.
-            if new_code == self.clear_code {
-                self.reset_tables();
-                last_decoded = None;
-                continue;
-            }
-
-            if new_code == self.end_code {
-                self.has_ended = true;
-                status = Ok(LzwStatus::Done);
-                last_decoded = None;
-                break;
-            }
-
-            if new_code > self.next_code {
-                status = Err(LzwError::InvalidCode);
-                last_decoded = None;
-                break;
-            }
-
-            let required_len = if new_code == self.next_code {
-                self.table.depths[usize::from(deriv.code)] + 1
-            } else {
-                self.table.depths[usize::from(new_code)]
-            };
-
-            // We need the decoded data of the new code if it is the `next_code`. This is the
-            // special case of LZW decoding that is demonstrated by `banana` (or form cScSc). In
-            // all other cases we only need the first character of the decoded data.
-            let have_next_code = new_code == self.next_code;
-
-            // Update the slice holding the last decoded word.
-            if have_next_code {
-                // If we did not have any burst code, we still hold that slice in the buffer.
-                if let Some(new_last) = target[..burst_size - 1].last_mut() {
-                    let slice = core::mem::replace(new_last, &mut []);
-                    last_decoded = Some(&*slice);
-                }
-            }
-
-            let cha;
-            let is_in_buffer = usize::from(required_len) > out.len();
-            // Check if we will need to store our current state into the buffer.
-            if is_in_buffer {
-                if have_next_code {
-                    // last_decoded will be Some if we have restored any code into the out slice.
-                    // Otherwise it will still be present in the buffer.
-                    if let Some(last) = last_decoded.take() {
-                        self.buffer.bytes[..last.len()].copy_from_slice(last);
-                        self.buffer.write_mark = last.len();
-                        self.buffer.read_mark = last.len();
+                // No code left in the buffer, and no more bytes to refill the buffer.
+                if cnt == 0 {
+                    if have_yet_to_decode_data {
+                        status = Ok(LzwStatus::NoProgress);
                     }
 
-                    cha = self.buffer.fill_cscsc();
-                } else {
-                    // Restore the decoded word into the buffer.
-                    last_decoded = None;
-                    cha = self.buffer.fill_reconstruct(&self.table, new_code);
-                }
-            } else {
-                let (target, tail) = out.split_at_mut(usize::from(required_len));
-                out = tail;
-
-                if have_next_code {
-                    // Reconstruct high.
-                    let source = match last_decoded.take() {
-                        Some(last) => last,
-                        None => &self.buffer.bytes[..self.buffer.write_mark],
-                    };
-
-                    // We don't *actually* expect the unwrap to happen. Each source is at least 1
-                    // byte long. But llvm doesn't know this (too much indirect loads and cases).
-                    cha = source.get(0).map(|x| *x).unwrap_or(0);
-                    target[..source.len()].copy_from_slice(source);
-                    target[source.len()..][0] = cha;
-                } else {
-                    cha = self.table.reconstruct(new_code, target);
+                    code_link = Some(deriv);
+                    break;
                 }
 
-                // A new decoded word.
-                last_decoded = Some(target);
-            }
+                debug_assert!(
+                    // When the table is full, we have a max code one above the mask.
+                    self.table.is_full()
+                    // When the code size is 2 we have a bit code: (0, 1, CLS, EOF). Then the
+                    // computed next_code is 4 which already exceeds the bit width from the start.
+                    // Then we will immediately switch code size after this code.
+                    //
+                    // TODO: this is the reason for some saturating and non-sharp comparisons in
+                    // the code below. Maybe it makes sense to revisit turning this into a compile
+                    // time choice?
+                        || (self.code_buffer.code_size() == 2 && self.next_code == 4)
+                        || self.code_buffer.max_code() - Code::from(self.is_tiff) >= self.next_code,
+                );
 
-            // Each newly read code creates one new code/link based on the preceding code if we
-            // have enough space to put it there.
-            if !self.table.is_full() {
-                self.table.derive(&deriv, cha);
+                let mut burst_size = 0;
+                let left_before_size_switch = (self.code_buffer.max_code()
+                    - Code::from(self.is_tiff))
+                .saturating_sub(self.next_code);
 
-                if self.next_code == self.code_buffer.max_code() - Code::from(self.is_tiff)
-                    && self.code_buffer.code_size() < MAX_CODESIZE
+                // A burst is a sequence of decodes that are completely independent of each other. This
+                // is the case if neither is an end code, a clear code, or a next code, i.e. we have
+                // all of them in the decoding table and thus known their depths, and additionally if
+                // we can decode them directly into the output buffer.
+                for b in &burst[..cnt] {
+                    // We can commit the previous burst code, and will take a slice from the output
+                    // buffer. This also avoids the bounds check in the tight loop later.
+                    if burst_size > 0 {
+                        let len = burst_byte_len[burst_size - 1];
+                        let (into, tail) = out.split_at_mut(usize::from(len));
+                        target[burst_size - 1] = into;
+                        out = tail;
+                    }
+
+                    // Check that we don't overflow the code size with all codes we burst decode.
+                    burst_size += 1;
+
+                    if burst_size > usize::from(left_before_size_switch) {
+                        break;
+                    }
+
+                    let read_code = *b;
+
+                    // A burst code can't be special.
+                    if read_code == self.clear_code
+                        || read_code == self.end_code
+                        || read_code >= self.next_code
+                    {
+                        break;
+                    }
+
+                    // Read the code length and check that we can decode directly into the out slice.
+                    let len = self.table.depths[usize::from(read_code)];
+
+                    if out.len() < usize::from(len) {
+                        break;
+                    }
+
+                    // We do exactly one more code (the one being inspected in the current iteration)
+                    // after the 'burst'. When we want to break decoding precisely on the supplied
+                    // buffer, we check if this is the last code to be decoded into it.
+                    if CgC::YIELD_ON_FULL {
+                        if out.len() == usize::from(len) {
+                            break;
+                        }
+                    }
+
+                    burst_byte_len[burst_size - 1] = len;
+                }
+
+                self.code_buffer.consume_bits(burst_size as u8);
+                have_yet_to_decode_data = false;
+
+                // Note that the very last code in the burst buffer doesn't actually belong to the
+                // burst itself. TODO: sometimes it could, we just don't differentiate between the
+                // breaks and a loop end condition above. That may be a speed advantage?
+                let (&new_code, burst) = burst[..burst_size].split_last().unwrap();
+
+                // The very tight loop for restoring the actual burst. These can be reconstructed in
+                // parallel since none of them depend on a prior constructed. Only the derivation of
+                // new codes is not parallel. There are no size changes here either.
+                let burst_targets = &mut target[..burst_size - 1];
+
+                if !self.table.is_full() {
+                    self.next_code += burst_targets.len() as u16;
+                }
+
+                for ((&burst, target), byte) in
+                    burst.iter().zip(&mut *burst_targets).zip(&mut burst_byte)
                 {
-                    self.bump_code_size();
+                    *byte = self.table.reconstruct(burst, target);
                 }
 
-                self.next_code += 1;
-            }
+                self.table.derive_burst(&mut deriv, burst, &burst_byte[..]);
 
-            // store the information on the decoded word.
-            code_link = Some(DerivationBase {
-                code: new_code,
-                first: cha,
-            });
+                // Now handle the special codes.
+                if new_code == self.clear_code {
+                    self.reset_tables();
+                    last_decoded = None;
+                    // Restarts in the next call to the entry point.
+                    break;
+                }
 
-            // Can't make any more progress with decoding.
-            if is_in_buffer {
-                break;
+                if new_code == self.end_code {
+                    self.has_ended = true;
+                    status = Ok(LzwStatus::Done);
+                    last_decoded = None;
+                    break;
+                }
+
+                if new_code > self.next_code {
+                    status = Err(LzwError::InvalidCode);
+                    last_decoded = None;
+                    break;
+                }
+
+                let required_len = if new_code == self.next_code {
+                    self.table.depths[usize::from(deriv.code)] + 1
+                } else {
+                    self.table.depths[usize::from(new_code)]
+                };
+
+                // We need the decoded data of the new code if it is the `next_code`. This is the
+                // special case of LZW decoding that is demonstrated by `banana` (or form cScSc). In
+                // all other cases we only need the first character of the decoded data.
+                let have_next_code = new_code == self.next_code;
+
+                // Update the slice holding the last decoded word.
+                if have_next_code {
+                    // If we did not have any burst code, we still hold that slice in the buffer.
+                    if let Some(new_last) = target[..burst_size - 1].last_mut() {
+                        let slice = core::mem::replace(new_last, &mut []);
+                        last_decoded = Some(&*slice);
+                    }
+                }
+
+                let cha;
+                let is_in_buffer = usize::from(required_len) > out.len();
+                // Check if we will need to store our current state into the buffer.
+                if is_in_buffer {
+                    if have_next_code {
+                        // last_decoded will be Some if we have restored any code into the out slice.
+                        // Otherwise it will still be present in the buffer.
+                        if let Some(last) = last_decoded.take() {
+                            self.buffer.bytes[..last.len()].copy_from_slice(last);
+                            self.buffer.write_mark = last.len();
+                            self.buffer.read_mark = last.len();
+                        }
+
+                        cha = self.buffer.fill_cscsc();
+                    } else {
+                        // Restore the decoded word into the buffer.
+                        last_decoded = None;
+                        cha = self.buffer.fill_reconstruct(&self.table, new_code);
+                    }
+                } else {
+                    let (target, tail) = out.split_at_mut(usize::from(required_len));
+                    out = tail;
+
+                    if have_next_code {
+                        // Reconstruct high.
+                        let source = match last_decoded.take() {
+                            Some(last) => last,
+                            None => &self.buffer.bytes[..self.buffer.write_mark],
+                        };
+
+                        // We don't *actually* expect the unwrap to happen. Each source is at least 1
+                        // byte long. But llvm doesn't know this (too much indirect loads and cases).
+                        cha = source.get(0).map(|x| *x).unwrap_or(0);
+                        target[..source.len()].copy_from_slice(source);
+                        target[source.len()..][0] = cha;
+                    } else {
+                        cha = self.table.reconstruct(new_code, target);
+                    }
+
+                    // A new decoded word.
+                    last_decoded = Some(target);
+                }
+
+                // Each newly read code creates one new code/link based on the preceding code if we
+                // have enough space to put it there.
+                if !self.table.is_full() {
+                    self.table.derive(&deriv, cha);
+
+                    if self.next_code >= self.code_buffer.max_code() - Code::from(self.is_tiff)
+                        && self.code_buffer.code_size() < MAX_CODESIZE
+                    {
+                        self.bump_code_size();
+                    }
+
+                    self.next_code += 1;
+                }
+
+                // store the information on the decoded word.
+                code_link = Some(DerivationBase {
+                    code: new_code,
+                    first: cha,
+                });
+
+                // Can't make any more progress with decoding.
+                //
+                // We have more data buffered but not enough space to put it? We want fetch a next
+                // symbol if possible as in the case of it being a new symbol we can refer to the
+                // buffered output as the source for that symbol's meaning and do a memcpy.
+                //
+                // Since this test is after decoding at least one code, we can now check for an
+                // empty buffer and still guarantee progress when one was passed as a parameter.
+                if is_in_buffer || out.is_empty() {
+                    break;
+                }
             }
         }
 
@@ -1074,6 +1123,7 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
         if let Some(tail) = last_decoded {
             self.buffer.bytes[..tail.len()].copy_from_slice(tail);
             self.buffer.write_mark = tail.len();
+            // Mark the full buffer as having been consumed.
             self.buffer.read_mark = tail.len();
         }
 
@@ -1410,12 +1460,15 @@ impl Table {
     fn derive_burst(&mut self, from: &mut DerivationBase, burst: &[Code], first: &[u8]) {
         let mut depth_of = from.code;
         // Note that false data dependency we want to get rid of!
+        // TODO: this pushes into a Vec, maybe we can make this cleaner.
         for &code in burst {
             let depth = self.depths[usize::from(depth_of)] + 1;
             self.depths.push(depth);
             depth_of = code;
         }
 
+        // Llvm tends to be flaky with code layout for the case of requiring an allocation. It's
+        // not clear if that can occur in practice but it relies on iterator size hint..
         let extensions = burst.iter().zip(first);
         self.inner.extend(extensions.map(|(&code, &first)| {
             let link = from.derive(first);
