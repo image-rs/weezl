@@ -1,4 +1,11 @@
-## Version 0.1.9
+## Version 0.1.10
+
+- Reverted changes made in 0.1.9 to the behavior of the decoder under non
+  libtiff-compatibility mode. Trying to read the decoder with an empty output
+  buffer will at least inspect the next symbol and either error or indicate the
+  end-of-stream accordingly.
+
+## Version 0.1.9 (yanked)
 
 - Increased decoding throughput by 3—30% depending on CPU and data.
 - Added `{encode,decode}::Configuration` as builder types for their respective
