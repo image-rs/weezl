@@ -916,8 +916,14 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                     // TODO: this is the reason for some saturating and non-sharp comparisons in
                     // the code below. Maybe it makes sense to revisit turning this into a compile
                     // time choice?
+                        || (self.code_buffer.code_size() == 1 && self.next_code < 4)
                         || (self.code_buffer.code_size() == 2 && self.next_code == 4)
                         || self.code_buffer.max_code() - Code::from(self.is_tiff) >= self.next_code,
+                    "Table: {}, code_size: {}, next_code: {}, table_condition: {}",
+                    self.table.is_full(),
+                    self.code_buffer.code_size(),
+                    self.next_code,
+                    self.code_buffer.max_code() - Code::from(self.is_tiff),
                 );
 
                 let mut burst_size = 0;
