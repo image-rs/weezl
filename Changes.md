@@ -1,3 +1,9 @@
+## Version 0.1.11
+
+- Adjusted a debug assertion that handled 1-bit code sizes incorrectly in the
+  decoder (relevant for TIFF but non-standard for GIF). In that case the size
+  switch semantics are a bit messy.
+
 ## Version 0.1.10
 
 - Reverted changes made in 0.1.9 to the behavior of the decoder under non
