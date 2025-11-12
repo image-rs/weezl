@@ -927,9 +927,12 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                 );
 
                 let mut burst_size = 0;
-                let left_before_size_switch = (self.code_buffer.max_code()
-                    - Code::from(self.is_tiff))
-                .saturating_sub(self.next_code);
+                let size_switch_at = self.code_buffer.max_code() - Code::from(self.is_tiff);
+                // This is intended to wrap. As by the debug assert above, we keep the next
+                // code bounded by the current size's max code where we switch code size.
+                // Except in case the table is full then we actually want to allow decoding
+                // of an arbitrary count of non-resetting symbols.
+                let left_before_size_switch = size_switch_at.wrapping_sub(self.next_code);
 
                 // A burst is a sequence of decodes that are completely independent of each other. This
                 // is the case if neither is an end code, a clear code, or a next code, i.e. we have
