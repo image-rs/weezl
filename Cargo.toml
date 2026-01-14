@@ -27,7 +27,7 @@ version = "1"
 default-features = false
 features = ["macros", "io-util", "net", "rt", "rt-multi-thread"]
 [dev-dependencies.tokio-util]
-version = "0.6.2"
+version = "0.7.7"
 default-features = false
 features = ["compat"]
 
