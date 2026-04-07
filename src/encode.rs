@@ -900,18 +900,34 @@ impl Tree {
             FullKey::NoSuccessor => None,
             FullKey::Simple(idx) => {
                 let nexts = &self.simples[usize::from(idx)];
-                let successors = nexts
-                    .codes
-                    .iter()
-                    .zip(nexts.chars.iter())
-                    .take(usize::from(nexts.count));
-                for (&scode, &sch) in successors {
-                    if sch == ch {
-                        return Some(scode);
+                let count = usize::from(nexts.count);
+                let chars = &nexts.chars;
+
+                if count <= 4 {
+                    // Sparse nodes: early-termination search.
+                    for i in 0..count {
+                        if chars[i] == ch {
+                            return Some(nexts.codes[i]);
+                        }
+                    }
+                    None
+                } else {
+                    // Dense nodes: branchless mask search over all 16 slots.
+                    // LLVM auto-vectorizes this into PCMPEQB + PMOVMSKB.
+                    let count_mask = (1u32 << count) - 1;
+                    let mut match_mask = 0u32;
+                    for i in 0..SHORT {
+                        if chars[i] == ch {
+                            match_mask |= 1 << i;
+                        }
+                    }
+                    match_mask &= count_mask;
+                    if match_mask != 0 {
+                        Some(nexts.codes[match_mask.trailing_zeros() as usize])
+                    } else {
+                        None
                     }
                 }
-
-                None
             }
             FullKey::Full(idx) => {
                 let full = &self.complex[usize::from(idx)];
