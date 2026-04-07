@@ -1656,12 +1656,18 @@ impl DecodeTable for ChunkedTable {
             self.firsts[idx] = byte;
             self.len += 1;
         }
+        // Clear code + End code: skip writing when the masked index would
+        // alias an alphabet entry (happens at min_size=12 where clear=4096
+        // wraps to index 0). The len counter still advances so is_full()
+        // correctly reports the table as full.
         for _ in 0..2 {
-            let idx = self.len & MASK;
-            self.suffixes[idx] = [0u8; Q];
-            self.prefixes[idx] = 0;
-            self.lm1s[idx] = 0;
-            self.firsts[idx] = 0;
+            if self.len < MAX_ENTRIES {
+                let idx = self.len & MASK;
+                self.suffixes[idx] = [0u8; Q];
+                self.prefixes[idx] = 0;
+                self.lm1s[idx] = 0;
+                self.firsts[idx] = 0;
+            }
             self.len += 1;
         }
     }

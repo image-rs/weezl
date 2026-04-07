@@ -127,6 +127,40 @@ mod tests {
     #[cfg(feature = "std")]
     use crate::{decode, encode};
 
+    /// Regression: at min_code_size=12, clear/end code indices (4096/4097)
+    /// must not wrap via `& MASK` and overwrite alphabet entries 0/1.
+    #[test]
+    fn roundtrip_min_code_size_12() {
+        use crate::BitOrder;
+        for &order in &[BitOrder::Lsb, BitOrder::Msb] {
+            for byte in 0..=255u8 {
+                let encoded = Encoder::new(order, 12).encode(&[byte]).unwrap();
+                let decoded = Decoder::new(order, 12).decode(&encoded).unwrap();
+                assert_eq!(decoded, vec![byte], "{:?} size=12 byte={}", order, byte);
+            }
+        }
+    }
+
+    /// Roundtrip with chunked table at all code sizes.
+    #[test]
+    fn roundtrip_chunked_all_sizes() {
+        use crate::decode::{Configuration, TableStrategy};
+        use crate::BitOrder;
+        for &order in &[BitOrder::Lsb, BitOrder::Msb] {
+            for size in 2..=12u8 {
+                let max_val = if size >= 8 { 255 } else { (1u8 << size) - 1 };
+                let data: Vec<u8> = (0..=max_val).collect();
+                let encoded = Encoder::new(order, size).encode(&data).unwrap();
+                let decoded = Configuration::new(order, size)
+                    .with_table_strategy(TableStrategy::Chunked)
+                    .build()
+                    .decode(&encoded)
+                    .unwrap();
+                assert_eq!(decoded, data, "{:?} size={} chunked roundtrip", order, size);
+            }
+        }
+    }
+
     #[test]
     fn stable_send() {
         fn must_be_send<T: Send + 'static>() {}
