@@ -82,7 +82,7 @@ trait Stateful {
     fn reset(&mut self);
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy, Default)]
 struct Link {
     prev: Code,
     byte: u8,
@@ -179,8 +179,9 @@ struct Buffer {
 }
 
 struct Table {
-    inner: Vec<Link>,
-    depths: Vec<u16>,
+    inner: Box<[Link; MAX_ENTRIES]>,
+    depths: Box<[u16; MAX_ENTRIES]>,
+    len: usize,
 }
 
 const Q: usize = 8;
@@ -1371,7 +1372,7 @@ impl CodeBuffer for LsbBuffer {
                 new_bits as u8
             }
         };
-        self.bit_buffer |= u64::from_be_bytes(buffer).swap_bytes() << self.bits;
+        self.bit_buffer |= u64::from_le_bytes(buffer) << self.bits;
         self.bits += new_bits;
     }
 
@@ -1467,86 +1468,73 @@ impl Buffer {
 impl Table {
     fn new() -> Self {
         Table {
-            inner: Vec::with_capacity(MAX_ENTRIES),
-            depths: Vec::with_capacity(MAX_ENTRIES),
+            inner: boxed_arr(),
+            depths: boxed_arr(),
+            len: 0,
         }
     }
 
     fn clear(&mut self, min_size: u8) {
-        let static_count = usize::from(1u16 << u16::from(min_size)) + 2;
-        self.inner.truncate(static_count);
-        self.depths.truncate(static_count);
+        self.len = usize::from(1u16 << u16::from(min_size)) + 2;
     }
 
     fn init(&mut self, min_size: u8) {
-        self.inner.clear();
-        self.depths.clear();
+        self.len = 0;
         for i in 0..(1u16 << u16::from(min_size)) {
-            self.inner.push(Link::base(i as u8));
-            self.depths.push(1);
+            let idx = self.len & MASK;
+            self.inner[idx] = Link::base(i as u8);
+            self.depths[idx] = 1;
+            self.len += 1;
         }
-        // Clear code.
-        self.inner.push(Link::base(0));
-        self.depths.push(0);
-        // End code.
-        self.inner.push(Link::base(0));
-        self.depths.push(0);
+        // Clear code + End code: skip writing when the masked index would
+        // alias an alphabet entry (happens at min_size=12).
+        for _ in 0..2 {
+            if self.len < MAX_ENTRIES {
+                let idx = self.len & MASK;
+                self.inner[idx] = Link::base(0);
+                self.depths[idx] = 0;
+            }
+            self.len += 1;
+        }
     }
 
     fn at(&self, code: Code) -> &Link {
-        &self.inner[usize::from(code)]
+        &self.inner[usize::from(code) & MASK]
     }
 
     fn is_empty(&self) -> bool {
-        self.inner.is_empty()
+        self.len == 0
     }
 
     fn is_full(&self) -> bool {
-        self.inner.len() >= MAX_ENTRIES
+        self.len >= MAX_ENTRIES
     }
 
     fn derive(&mut self, from: &DerivationBase, byte: u8) {
-        let link = from.derive(byte);
-        let depth = self.depths[usize::from(from.code)] + 1;
-        self.inner.push(link);
-        self.depths.push(depth);
+        let idx = self.len & MASK;
+        let depth = self.depths[usize::from(from.code) & MASK] + 1;
+        self.inner[idx] = from.derive(byte);
+        self.depths[idx] = depth;
+        self.len += 1;
     }
 
-    // Derive multiple codes in a row, where each base is guaranteed to already exist.
     fn derive_burst(&mut self, from: &mut DerivationBase, burst: &[Code], first: &[u8]) {
-        let mut depth_of = from.code;
-        // Note that false data dependency we want to get rid of!
-        // TODO: this pushes into a Vec, maybe we can make this cleaner.
-        for &code in burst {
-            let depth = self.depths[usize::from(depth_of)] + 1;
-            self.depths.push(depth);
-            depth_of = code;
-        }
-
-        // Llvm tends to be flaky with code layout for the case of requiring an allocation. It's
-        // not clear if that can occur in practice but it relies on iterator size hint..
-        let extensions = burst.iter().zip(first);
-        self.inner.extend(extensions.map(|(&code, &first)| {
-            let link = from.derive(first);
+        for (&code, &first_byte) in burst.iter().zip(first.iter()) {
+            self.derive(from, first_byte);
             from.code = code;
-            from.first = first;
-            link
-        }));
+            from.first = first_byte;
+        }
     }
 
     fn reconstruct(&self, code: Code, out: &mut [u8]) -> u8 {
         let mut code_iter = code;
-        let table = &self.inner[..=usize::from(code)];
-        let first = table[usize::from(code)].first;
+        let first = self.inner[usize::from(code) & MASK].first;
 
-        let len = code_iter;
+        // The `& MASK` ensures any prev value (even from corrupt data) maps
+        // to a valid array index, replacing the previous `min(len, prev)` clamp.
         for ch in out.iter_mut().rev() {
-            //(code, cha) = self.table[k as usize];
-            // Note: This could possibly be replaced with an unchecked array access if
-            //  - value is asserted to be < self.next_code() in push
-            //  - min_size is asserted to be < MAX_CODESIZE
-            let entry = &table[usize::from(code_iter)];
-            code_iter = core::cmp::min(len, entry.prev);
+            let entry = &self.inner[usize::from(code_iter) & MASK];
+            code_iter = entry.prev;
             *ch = entry.byte;
         }
 
@@ -1588,15 +1576,15 @@ impl DecodeTable for Table {
     }
 
     fn first_of(&self, code: Code) -> u8 {
-        self.inner[usize::from(code)].first
+        self.inner[usize::from(code) & MASK].first
     }
 
     fn depth(&self, code: Code) -> u16 {
-        self.depths[usize::from(code)]
+        self.depths[usize::from(code) & MASK]
     }
 
     fn len(&self) -> usize {
-        self.inner.len()
+        self.len
     }
 
     fn is_empty(&self) -> bool {
