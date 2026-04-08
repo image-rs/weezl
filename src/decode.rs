@@ -82,12 +82,15 @@ trait Stateful {
     fn reset(&mut self);
 }
 
+/// Internally has three bitfields: the previous code, the new last byte, and the first byte.
+///
+/// The order of these fields is motivated by the table lookup we perform with the code. We mask it
+/// off when indexing into [_; MAX_CODE] which LLVM leverages to avoid the boundary check. It's
+/// nice if the index is in a separate register as a result of this AND-masking anyways: we can use
+/// bitshifts extracting the other two fields with the same input.
 #[derive(Clone, Copy, Default)]
-struct Link {
-    prev: Code,
-    byte: u8,
-    first: u8,
-}
+#[repr(transparent)]
+struct Link(u32);
 
 #[derive(Clone)]
 struct DerivationBase {
@@ -796,7 +799,7 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                                 let link = self.table.at(init_code).clone();
                                 code_link = Some(DerivationBase {
                                     code: init_code,
-                                    first: link.first,
+                                    first: link.first(),
                                 });
                             } else {
                                 // We require an explicit reset.
@@ -808,7 +811,7 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                             let link = self.table.at(init_code).clone();
                             code_link = Some(DerivationBase {
                                 code: init_code,
-                                first: link.first,
+                                first: link.first(),
                             });
                         }
                     }
@@ -1496,17 +1499,17 @@ impl Table {
     }
 
     fn reconstruct(&self, code: Code, out: &mut [u8]) -> u8 {
-        let mut code_iter = code;
-        let first = self.inner[usize::from(code) & MASK].first;
+        // Invariant: this only has those bits of `MASK`, i.e. `< MAX_CODE`;
+        let mut code_iter = usize::from(code) & MASK;
+        let first = self.inner[code_iter].first();
 
-        // The `& MASK` ensures any prev value (even from corrupt data) maps
-        // to a valid array index. This replaces the previous `min(len, prev)`
-        // clamp with equivalent safety: no panic, bounded loop, wrong output
-        // on corrupt data.
+        // Masked access ensures any prev value (even from corrupt data) maps to a valid array
+        // index. This replaces a previous `min(len, prev)` clamp with equivalent safety: no panic,
+        // bounded loop, wrong output on corrupt data, but optimizes better.
         for ch in out.iter_mut().rev() {
-            let entry = &self.inner[usize::from(code_iter) & MASK];
-            code_iter = entry.prev;
-            *ch = entry.byte;
+            let entry = &self.inner[code_iter];
+            code_iter = entry.prev_idx();
+            *ch = entry.byte();
         }
 
         first
@@ -1514,24 +1517,31 @@ impl Table {
 }
 
 impl Link {
-    fn base(byte: u8) -> Self {
-        Link {
-            prev: 0,
-            byte,
-            first: byte,
-        }
+    const fn base(byte: u8) -> Self {
+        let n = byte as u32;
+        Link(n << 24 | n << 16)
+    }
+
+    /// Extract the code of the previous link as an index. Masks the value to avoid bounds checks
+    /// if you use it against a sufficiently sized array.
+    fn prev_idx(self) -> usize {
+        self.0 as usize & MASK
+    }
+
+    fn byte(self) -> u8 {
+        (self.0 >> 16) as u8
+    }
+
+    fn first(self) -> u8 {
+        (self.0 >> 24) as u8
     }
 }
 
 impl DerivationBase {
-    // TODO: this has self type to make it clear we might depend on the old in a future
-    // optimization. However, that has no practical purpose right now.
     fn derive(&self, byte: u8) -> Link {
-        Link {
-            prev: self.code,
-            byte,
-            first: self.first,
-        }
+        let byte = u32::from(byte) << 16;
+        let first = u32::from(self.first) << 24;
+        Link(first | byte | u32::from(self.code))
     }
 }
 
