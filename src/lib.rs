@@ -121,8 +121,11 @@ pub use self::error::{BufferResult, LzwError, LzwStatus};
 
 #[cfg(all(test, feature = "alloc"))]
 mod tests {
-    use crate::decode::Decoder;
+    use crate::alloc::vec;
+    use crate::alloc::vec::Vec;
+    use crate::decode::{Configuration as DecodeConfig, Decoder, TableStrategy};
     use crate::encode::Encoder;
+    use crate::BitOrder;
 
     #[cfg(feature = "std")]
     use crate::{decode, encode};
@@ -141,6 +144,62 @@ mod tests {
         fn _all_send_writer<'d, W: std::io::Write + Send + 'd>() {
             _send_and_lt::<'d, decode::IntoStream<'d, W>>();
             _send_and_lt::<'d, encode::IntoStream<'d, W>>();
+        }
+    }
+
+    /// Regression: the chunked table guards against index wrap-around when
+    /// min_code_size = 12 (clear = 4096, end = 4097) — those would alias into
+    /// alphabet entries with `& MASK` indexing.
+    #[test]
+    fn roundtrip_min_code_size_12() {
+        let data: Vec<u8> = (0..4096u16).flat_map(|n| n.to_le_bytes()).collect();
+        for &order in &[BitOrder::Msb, BitOrder::Lsb] {
+            let encoded = Encoder::new(order, 12).encode(&data).unwrap();
+            for &strategy in &[TableStrategy::Classic, TableStrategy::Chunked] {
+                let decoded = DecodeConfig::new(order, 12)
+                    .with_table_strategy(strategy)
+                    .build()
+                    .decode(&encoded)
+                    .unwrap();
+                assert_eq!(decoded, data, "order={:?} strategy={:?}", order, strategy);
+            }
+        }
+    }
+
+    /// Both table strategies must produce identical output on the same encoded
+    /// data across every legal code size and bit order.
+    #[test]
+    fn roundtrip_chunked_all_sizes() {
+        for size in 2u8..=12 {
+            // Deterministic palette-ish payload that stays within the alphabet
+            // of this code size and exercises long LZW strings.
+            let alphabet_mask: u8 = if size >= 8 {
+                0xFF
+            } else {
+                (1u16 << size).wrapping_sub(1) as u8
+            };
+            let mut data = vec![0u8; 16 * 1024];
+            let mut state: u32 = 0x1234_5678;
+            for b in data.iter_mut() {
+                state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+                *b = (state >> 24) as u8 & alphabet_mask;
+            }
+
+            for &order in &[BitOrder::Msb, BitOrder::Lsb] {
+                let encoded = Encoder::new(order, size).encode(&data).unwrap();
+                let classic = DecodeConfig::new(order, size)
+                    .with_table_strategy(TableStrategy::Classic)
+                    .build()
+                    .decode(&encoded)
+                    .unwrap();
+                let chunked = DecodeConfig::new(order, size)
+                    .with_table_strategy(TableStrategy::Chunked)
+                    .build()
+                    .decode(&encoded)
+                    .unwrap();
+                assert_eq!(classic, data, "classic size={} order={:?}", size, order);
+                assert_eq!(chunked, data, "chunked size={} order={:?}", size, order);
+            }
         }
     }
 }
