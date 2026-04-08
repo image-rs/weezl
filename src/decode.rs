@@ -1503,11 +1503,24 @@ impl Table {
         let mut code_iter = usize::from(code) & MASK;
         let first = self.inner[code_iter].first();
 
+        // Non-behavioral instrumentation (DO NOT MERGE): the pre-#61 decoder
+        // walked the chain with `code_iter = min(len, entry.prev)` where
+        // `len` was the initial code. The clamp only changed its argument
+        // when `entry.prev > len`. We re-evaluate that predicate against
+        // each entry we visit, without altering how the walk actually
+        // proceeds, so the test suite can observe whether any valid or
+        // corrupt input ever trips it.
+        let initial_code = usize::from(code);
+
         // Masked access ensures any prev value (even from corrupt data) maps to a valid array
         // index. This replaces a previous `min(len, prev)` clamp with equivalent safety: no panic,
         // bounded loop, wrong output on corrupt data, but optimizes better.
         for ch in out.iter_mut().rev() {
             let entry = &self.inner[code_iter];
+            let raw_prev = entry.raw_prev();
+            if raw_prev > initial_code {
+                crate::clamp_stats::record_clamp();
+            }
             code_iter = entry.prev_idx();
             *ch = entry.byte();
         }
@@ -1526,6 +1539,13 @@ impl Link {
     /// if you use it against a sufficiently sized array.
     fn prev_idx(self) -> usize {
         self.0 as usize & MASK
+    }
+
+    /// Non-behavioral (DO NOT MERGE) accessor: the unmasked low 16 bits
+    /// of the packed link, used by the clamp-observation instrumentation
+    /// to re-evaluate the pre-#61 `entry.prev > len` predicate.
+    fn raw_prev(self) -> usize {
+        self.0 as u16 as usize
     }
 
     fn byte(self) -> u8 {

@@ -115,6 +115,36 @@ pub mod decode;
 pub mod encode;
 mod error;
 
+/// **DO NOT MERGE — demonstration only.**
+///
+/// Instrumentation counter for the hypothetical pre-#61
+/// `min(len, entry.prev)` clamp in `Table::reconstruct`. #61 removed the
+/// clamp on the grounds that it was dead on valid input. This module lets
+/// the test suite observe the assertion empirically: on every entry visited
+/// during chain-walk we check whether the pre-#61 clamp *would have* fired
+/// (`raw_prev > initial_code`) and increment a counter. Actual decode
+/// behavior is unchanged — the counter has no effect on output bytes.
+pub mod clamp_stats {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    static CLAMP_COUNT: AtomicU64 = AtomicU64::new(0);
+
+    pub(crate) fn record_clamp() {
+        CLAMP_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Number of times the pre-#61 `min()` clamp would have fired since the
+    /// last [`reset`].
+    pub fn clamp_count() -> u64 {
+        CLAMP_COUNT.load(Ordering::Relaxed)
+    }
+
+    /// Zero the counter between test cases.
+    pub fn reset() {
+        CLAMP_COUNT.store(0, Ordering::Relaxed);
+    }
+}
+
 #[cfg(feature = "std")]
 pub use self::error::StreamResult;
 pub use self::error::{BufferResult, LzwError, LzwStatus};
