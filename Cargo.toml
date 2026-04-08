@@ -1,7 +1,7 @@
 [package]
 name = "weezl"
 version = "0.2.0"
-rust-version = "1.56.0"
+rust-version = "1.62.0"
 edition = "2018"
 
 license = "MIT OR Apache-2.0"

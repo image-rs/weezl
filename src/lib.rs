@@ -121,6 +121,8 @@ pub use self::error::{BufferResult, LzwError, LzwStatus};
 
 #[cfg(all(test, feature = "alloc"))]
 mod tests {
+    use crate::alloc::vec;
+    use crate::alloc::vec::Vec;
     use crate::decode::Decoder;
     use crate::encode::Encoder;
 
