@@ -269,12 +269,11 @@ struct ChunkedTable {
 ///
 /// Run `cargo bench --bench corpus` to reproduce the measurements and
 /// verify the crossover on your own hardware.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub enum TableStrategy {
     /// Classic 1-byte chain walk (24KB table). Best for high-entropy data
     /// where LZW strings are short. This is the default, matching weezl's
     /// existing behavior.
-    #[default]
     Classic,
     /// 8-byte suffix chunks (52KB table). Up to ~3x faster on palette /
     /// screen-content data where LZW produces long strings, at the cost of
@@ -284,6 +283,12 @@ pub enum TableStrategy {
     ///
     /// See [`TableStrategy`] for a ratio-based decision table.
     Chunked,
+}
+
+impl Default for TableStrategy {
+    fn default() -> Self {
+        TableStrategy::Classic
+    }
 }
 
 /// Describes the static parameters for creating a decoder.
