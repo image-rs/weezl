@@ -24,6 +24,22 @@ features = ["std"]
 
 [dev-dependencies]
 criterion = "0.3.1"
+# Used by the `corpus` benchmark to download test images from
+# imazen/codec-corpus on first run and cache them locally.
+codec-corpus = "1"
+# PNG decoding for the `corpus` benchmark — we decode source images to
+# raw pixel bytes before re-encoding them as GIF and TIFF.
+png = "0.18"
+# GIF encoder for the `corpus` benchmark. We write full GIF files (via
+# `Frame::from_rgb` / `from_palette_pixels`), then extract the embedded
+# LZW stream and decode it through weezl under test. The published gif
+# crate depends on weezl 0.1.10; Cargo resolves that alongside our path
+# override, so there is no version conflict.
+gif = "0.14"
+# TIFF encoder for the `corpus` benchmark. We write full TIFF files with
+# LZW compression, then slice the strip out of the container and decode
+# it through weezl under test. Same coexistence story as gif.
+tiff = { version = "0.11", default-features = false, features = ["lzw"] }
 [dev-dependencies.tokio]
 version = "1"
 default-features = false
@@ -57,6 +73,11 @@ required-features = ["std"]
 
 [[bench]]
 name = "msb8"
+harness = false
+required-features = ["std"]
+
+[[bench]]
+name = "corpus"
 harness = false
 required-features = ["std"]
 
