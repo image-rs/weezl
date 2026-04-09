@@ -667,6 +667,14 @@ mod impl_decode_into_async;
 
 impl<C: CodeBuffer, CgC: CodegenConstants> DecodeState<C, CgC> {
     fn new(min_size: u8) -> Self {
+        let mut code_buffer = C::new(min_size);
+        let next_code: u16 = (1 << min_size) + 2;
+        // At min_size 0 or 1 the clear+end codes already fill max_code,
+        // so bump code_size once so the first code can be read. No-op
+        // for min_size >= 2.
+        if next_code > code_buffer.max_code() && code_buffer.code_size() < MAX_CODESIZE {
+            code_buffer.bump_code_size();
+        }
         DecodeState {
             min_size,
             table: Table::new(),
@@ -674,11 +682,11 @@ impl<C: CodeBuffer, CgC: CodegenConstants> DecodeState<C, CgC> {
             last: None,
             clear_code: 1 << min_size,
             end_code: (1 << min_size) + 1,
-            next_code: (1 << min_size) + 2,
+            next_code,
             has_ended: false,
             is_tiff: false,
             implicit_reset: true,
-            code_buffer: CodeBuffer::new(min_size),
+            code_buffer,
             constants: core::marker::PhantomData,
         }
     }
@@ -687,12 +695,22 @@ impl<C: CodeBuffer, CgC: CodegenConstants> DecodeState<C, CgC> {
         self.code_buffer.reset(self.min_size);
         self.next_code = (1 << self.min_size) + 2;
         self.table.init(self.min_size);
+        if self.next_code > self.code_buffer.max_code()
+            && self.code_buffer.code_size() < MAX_CODESIZE
+        {
+            self.code_buffer.bump_code_size();
+        }
     }
 
     fn reset_tables(&mut self) {
         self.code_buffer.reset(self.min_size);
         self.next_code = (1 << self.min_size) + 2;
         self.table.clear(self.min_size);
+        if self.next_code > self.code_buffer.max_code()
+            && self.code_buffer.code_size() < MAX_CODESIZE
+        {
+            self.code_buffer.bump_code_size();
+        }
     }
 }
 
@@ -713,6 +731,11 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
         self.last = None;
         self.restart();
         self.code_buffer = CodeBuffer::new(self.min_size);
+        if self.next_code > self.code_buffer.max_code()
+            && self.code_buffer.code_size() < MAX_CODESIZE
+        {
+            self.code_buffer.bump_code_size();
+        }
     }
 
     fn advance(&mut self, mut inp: &[u8], mut out: &mut [u8]) -> BufferResult {
@@ -919,16 +942,7 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                 debug_assert!(
                     // When the table is full, we have a max code above the size switch.
                     self.table.len >= MAX_ENTRIES - usize::from(self.is_tiff)
-                    // When the code size is 2 we have a bit code: (0, 1, CLS, EOF). Then the
-                    // computed next_code is 4 which already exceeds the bit width from the start.
-                    // Then we will immediately switch code size after this code.
-                    //
-                    // TODO: this is the reason for some saturating and non-sharp comparisons in
-                    // the code below. Maybe it makes sense to revisit turning this into a compile
-                    // time choice?
-                    || (self.code_buffer.code_size() == 1 && self.next_code < 4)
-                    || (self.code_buffer.code_size() == 2 && self.next_code == 4)
-                    || self.code_buffer.max_code() - Code::from(self.is_tiff) >= self.next_code,
+                        || self.code_buffer.max_code() - Code::from(self.is_tiff) >= self.next_code,
                     "Table: {}, code_size: {}, next_code: {}, table_condition: {}",
                     self.table.is_full(),
                     self.code_buffer.code_size(),

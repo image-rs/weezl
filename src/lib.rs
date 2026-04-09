@@ -101,7 +101,6 @@ fn assert_decode_size(size: u8) {
 
 #[cold]
 fn assert_encode_size(size: u8) {
-    assert!(size >= 2, "Minimum code size 2 required, got {}", size);
     assert!(
         size <= MAX_CODESIZE,
         "Maximum code size 12 required, got {}",
