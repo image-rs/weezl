@@ -33,3 +33,9 @@ doc = false
 [[bin]]
 name = "decode0"
 path = "fuzz_targets/decode0.rs"
+
+[[bin]]
+name = "lowbit"
+path = "fuzz_targets/lowbit.rs"
+test = false
+doc = false

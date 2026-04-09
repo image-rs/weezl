@@ -60,6 +60,11 @@ name = "msb8"
 harness = false
 required-features = ["std"]
 
+[[bench]]
+name = "lowbit"
+harness = false
+required-features = ["std"]
+
 [[example]]
 name = "lzw-compress"
 required-features = ["std"]
