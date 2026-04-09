@@ -33,3 +33,9 @@ doc = false
 [[bin]]
 name = "decode0"
 path = "fuzz_targets/decode0.rs"
+
+[[bin]]
+name = "roundtrip_all"
+path = "fuzz_targets/roundtrip_all.rs"
+test = false
+doc = false
