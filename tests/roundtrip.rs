@@ -1,5 +1,5 @@
 use std::io;
-use std::{env, fs};
+use std::{env, fmt, fs};
 use weezl::{decode, encode, BitOrder};
 
 #[derive(Clone, Copy, Debug)]
@@ -83,7 +83,32 @@ fn assert_roundtrips(
     };
     let result = decoder.into_stream(&mut compare).decode_all(buf_reader);
     assert!(result.status.is_ok(), "{:?}, {:?}", dec, result.status);
-    assert!(data == &*compare, "{:?}\n{:?}\n{:?}", dec, data, compare);
+    assert!(
+        data == &*compare,
+        "{:?}\n{:?}",
+        dec,
+        Compare {
+            data,
+            compare: &*compare
+        }
+    );
+}
+
+struct Compare<'a> {
+    data: &'a [u8],
+    compare: &'a [u8],
+}
+
+impl fmt::Debug for Compare<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        for (idx, (&a, &b)) in self.data.iter().zip(self.compare).enumerate() {
+            if a != b {
+                writeln!(f, "{idx}: {a}/{b}")?;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 struct TinyRead<'a> {

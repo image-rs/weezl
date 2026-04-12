@@ -85,7 +85,6 @@ trait Stateful {
 #[derive(Clone, Copy, Default)]
 struct Link {
     prev: Code,
-    byte: u8,
     first: u8,
 }
 
@@ -151,11 +150,11 @@ impl CodegenConstants for YieldOnFull {
     const YIELD_ON_FULL: bool = true;
 }
 
-struct DecodeState<CodeBuffer, Tab: DecodeTable, Constants: CodegenConstants> {
+struct DecodeState<CodeBuffer, Constants: CodegenConstants> {
     /// The original minimum code size.
     min_size: u8,
     /// The table of decoded codes.
-    table: Tab,
+    table: Table,
     /// The buffer of decoded data.
     buffer: Buffer,
     /// The link which we are still decoding and its original code.
@@ -190,7 +189,8 @@ struct Buffer {
 }
 
 struct Table {
-    inner: Box<[Link; MAX_ENTRIES]>,
+    suffixes: Box<[[u8; STREAMING_Q]; MAX_ENTRIES]>,
+    chain: Box<[Link; MAX_ENTRIES]>,
     depths: Box<[u16; MAX_ENTRIES]>,
     len: usize,
 }
@@ -342,8 +342,8 @@ impl Decoder {
 
     fn from_configuration(configuration: &Configuration) -> Box<dyn Stateful + Send + 'static> {
         macro_rules! make_state {
-            ($buf:ty, $tab:ty, $cgc:ty) => {{
-                let mut state = Box::new(DecodeState::<$buf, $tab, $cgc>::new(configuration.size));
+            ($buf:ty, $cgc:ty) => {{
+                let mut state = Box::new(DecodeState::<$buf, $cgc>::new(configuration.size));
                 state.is_tiff = configuration.tiff;
                 state as Box<dyn Stateful + Send + 'static>
             }};
@@ -355,16 +355,16 @@ impl Decoder {
             configuration.strategy,
         ) {
             (BitOrder::Lsb, false, TableStrategy::Classic) => {
-                make_state!(LsbBuffer, Table, NoYield)
+                make_state!(LsbBuffer, NoYield)
             }
             (BitOrder::Lsb, true, TableStrategy::Classic) => {
-                make_state!(LsbBuffer, Table, YieldOnFull)
+                make_state!(LsbBuffer, YieldOnFull)
             }
             (BitOrder::Msb, false, TableStrategy::Classic) => {
-                make_state!(MsbBuffer, Table, NoYield)
+                make_state!(MsbBuffer, NoYield)
             }
             (BitOrder::Msb, true, TableStrategy::Classic) => {
-                make_state!(MsbBuffer, Table, YieldOnFull)
+                make_state!(MsbBuffer, YieldOnFull)
             }
             (BitOrder::Lsb, false, TableStrategy::Streaming) => {
                 let mut state = Box::new(DecodeStateStreaming::<StreamingLsb, NoYield>::new(
@@ -748,11 +748,11 @@ impl IntoVec<'_> {
 #[path = "decode_into_async.rs"]
 mod impl_decode_into_async;
 
-impl<C: CodeBuffer, Tab: DecodeTable, CgC: CodegenConstants> DecodeState<C, Tab, CgC> {
+impl<C: CodeBuffer, CgC: CodegenConstants> DecodeState<C, CgC> {
     fn new(min_size: u8) -> Self {
         DecodeState {
             min_size,
-            table: Tab::new(),
+            table: Table::new(),
             buffer: Buffer::new(),
             last: None,
             clear_code: 1 << min_size,
@@ -779,7 +779,7 @@ impl<C: CodeBuffer, Tab: DecodeTable, CgC: CodegenConstants> DecodeState<C, Tab,
     }
 }
 
-impl<C: CodeBuffer, Tab: DecodeTable, CgC: CodegenConstants> Stateful for DecodeState<C, Tab, CgC> {
+impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
     fn has_ended(&self) -> bool {
         self.has_ended
     }
@@ -1061,7 +1061,7 @@ impl<C: CodeBuffer, Tab: DecodeTable, CgC: CodegenConstants> Stateful for Decode
                     }
 
                     // Read the code length and check that we can decode directly into the out slice.
-                    let len = self.table.depth(read_code);
+                    let len = self.table.code_len(read_code);
 
                     if out.len() < usize::from(len) {
                         break;
@@ -1126,9 +1126,9 @@ impl<C: CodeBuffer, Tab: DecodeTable, CgC: CodegenConstants> Stateful for Decode
                 }
 
                 let required_len = if new_code == self.next_code {
-                    self.table.depth(deriv.code) + 1
+                    self.table.code_len(deriv.code) + 1
                 } else {
-                    self.table.depth(new_code)
+                    self.table.code_len(new_code)
                 };
 
                 // We need the decoded data of the new code if it is the `next_code`. This is the
@@ -1250,7 +1250,7 @@ impl<C: CodeBuffer, Tab: DecodeTable, CgC: CodegenConstants> Stateful for Decode
     }
 }
 
-impl<C: CodeBuffer, Tab: DecodeTable, CgC: CodegenConstants> DecodeState<C, Tab, CgC> {
+impl<C: CodeBuffer, CgC: CodegenConstants> DecodeState<C, CgC> {
     fn next_symbol(&mut self, inp: &mut &[u8]) -> Option<Code> {
         self.code_buffer.next_symbol(inp)
     }
@@ -1489,16 +1489,12 @@ impl Buffer {
     }
 
     // Fill the buffer by decoding from the table
-    fn fill_reconstruct(&mut self, table: &impl DecodeTable, code: Code) -> u8 {
+    fn fill_reconstruct(&mut self, table: &Table, code: Code) -> u8 {
         self.write_mark = 0;
         self.read_mark = 0;
-        let depth = table.depth(code);
-        let mut memory = core::mem::replace(&mut self.bytes, Box::default());
-
-        let out = &mut memory[..usize::from(depth)];
+        let depth = table.code_len(code);
+        let out = &mut self.bytes[..usize::from(depth)];
         let last = table.reconstruct(code, out);
-
-        self.bytes = memory;
         self.write_mark = usize::from(depth);
         last
     }
@@ -1515,7 +1511,8 @@ impl Buffer {
 impl Table {
     fn new() -> Self {
         Table {
-            inner: boxed_arr(),
+            suffixes: boxed_arr(),
+            chain: boxed_arr(),
             depths: boxed_arr(),
             len: 0,
         }
@@ -1529,7 +1526,8 @@ impl Table {
         self.len = 0;
         for i in 0..(1u16 << u16::from(min_size)) {
             let idx = self.len & MASK;
-            self.inner[idx] = Link::base(i as u8);
+            self.suffixes[idx] = [i as u8, 0, 0, 0, 0, 0, 0, 0];
+            self.chain[idx] = Link::base(i as u8);
             self.depths[idx] = 1;
             self.len += 1;
         }
@@ -1538,15 +1536,23 @@ impl Table {
         for _ in 0..2 {
             if self.len < MAX_ENTRIES {
                 let idx = self.len & MASK;
-                self.inner[idx] = Link::base(0);
+                self.chain[idx] = Link::base(0);
                 self.depths[idx] = 0;
             }
             self.len += 1;
         }
     }
 
-    fn at(&self, code: Code) -> &Link {
-        &self.inner[usize::from(code) & MASK]
+    fn first_of(&self, code: Code) -> u8 {
+        self.chain[usize::from(code) & MASK].first
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn code_len(&self, code: Code) -> u16 {
+        self.depths[usize::from(code) & MASK]
     }
 
     fn is_empty(&self) -> bool {
@@ -1559,9 +1565,23 @@ impl Table {
 
     fn derive(&mut self, from: &DerivationBase, byte: u8) {
         let idx = self.len & MASK;
-        let depth = self.depths[usize::from(from.code) & MASK] + 1;
-        self.inner[idx] = from.derive(byte);
-        self.depths[idx] = depth;
+
+        let parent = usize::from(from.code) & MASK;
+        let parent_depth = self.depths[parent];
+        let pos = parent_depth as usize & (STREAMING_Q - 1);
+        let mut link = from.derive();
+
+        if pos > 0 {
+            self.suffixes[idx] = self.suffixes[parent];
+            self.suffixes[idx][pos] = byte;
+            link.prev = self.chain[parent].prev;
+        } else {
+            self.suffixes[idx] = [0u8; STREAMING_Q];
+            self.suffixes[idx][0] = byte;
+        }
+
+        self.depths[idx] = parent_depth + 1;
+        self.chain[idx] = link;
         self.len += 1;
     }
 
@@ -1574,84 +1594,35 @@ impl Table {
     }
 
     fn reconstruct(&self, code: Code, out: &mut [u8]) -> u8 {
-        let mut code_iter = code;
-        let first = self.inner[usize::from(code) & MASK].first;
+        let o = out.len();
+        let code_index = usize::from(code) & MASK;
+        let suffix = &self.suffixes[code_index];
 
-        // The `& MASK` ensures any prev value (even from corrupt data) maps
-        // to a valid array index, replacing the previous `min(len, prev)` clamp.
-        for ch in out.iter_mut().rev() {
-            let entry = &self.inner[usize::from(code_iter) & MASK];
-            code_iter = entry.prev;
-            *ch = entry.byte;
+        // Short path: whole value fits in one Q-chunk.
+        if o <= STREAMING_Q {
+            out.copy_from_slice(&suffix[..o]);
+            return self.chain[code_index].first;
+        }
+
+        // Tail: last incomplete chunk. Note: this is not the same as as_chunks_mut's tail since we
+        // have a full chunk when this the cdde depth is aligned.
+        let tail_len = ((o - 1) & (STREAMING_Q - 1)) + 1;
+        let tail_start = o - tail_len;
+        out[tail_start..].copy_from_slice(&suffix[..tail_len]);
+
+        let first = self.chain[code_index].first;
+        let mut c = self.chain[code_index].prev;
+        // Full 8-byte chunks, walking the prefix chain backward.
+        // chunks_exact_mut guarantees each chunk has exactly STREAMING_Q bytes,
+        // so LLVM compiles copy_from_slice to a single qword move with no
+        // bounds check. The `.rev()` walks from end to start.
+        for chunk in out[..tail_start].chunks_exact_mut(STREAMING_Q).rev() {
+            let code_index = usize::from(c) & MASK;
+            chunk.copy_from_slice(&self.suffixes[code_index]);
+            c = self.chain[code_index].prev;
         }
 
         first
-    }
-}
-
-#[allow(dead_code)]
-trait DecodeTable {
-    fn new() -> Self;
-    fn init(&mut self, min_size: u8);
-    fn clear(&mut self, min_size: u8);
-    fn at(&self, code: Code) -> &Link;
-    fn first_of(&self, code: Code) -> u8;
-    fn depth(&self, code: Code) -> u16;
-    fn len(&self) -> usize;
-    fn is_empty(&self) -> bool;
-    fn is_full(&self) -> bool;
-    fn derive(&mut self, from: &DerivationBase, byte: u8);
-    fn derive_burst(&mut self, from: &mut DerivationBase, burst: &[Code], first: &[u8]);
-    fn reconstruct(&self, code: Code, out: &mut [u8]) -> u8;
-}
-
-impl DecodeTable for Table {
-    fn new() -> Self {
-        Table::new()
-    }
-
-    fn init(&mut self, min_size: u8) {
-        Table::init(self, min_size)
-    }
-
-    fn clear(&mut self, min_size: u8) {
-        Table::clear(self, min_size)
-    }
-
-    fn at(&self, code: Code) -> &Link {
-        Table::at(self, code)
-    }
-
-    fn first_of(&self, code: Code) -> u8 {
-        self.inner[usize::from(code) & MASK].first
-    }
-
-    fn depth(&self, code: Code) -> u16 {
-        self.depths[usize::from(code) & MASK]
-    }
-
-    fn len(&self) -> usize {
-        self.len
-    }
-
-    fn is_empty(&self) -> bool {
-        Table::is_empty(self)
-    }
-
-    fn is_full(&self) -> bool {
-        Table::is_full(self)
-    }
-
-    fn derive(&mut self, from: &DerivationBase, byte: u8) {
-        Table::derive(self, from, byte)
-    }
-
-    fn derive_burst(&mut self, from: &mut DerivationBase, burst: &[Code], first: &[u8]) {
-        Table::derive_burst(self, from, burst, first)
-    }
-
-    fn reconstruct(&self, code: Code, out: &mut [u8]) -> u8 {
-        Table::reconstruct(self, code, out)
     }
 }
 
@@ -1668,7 +1639,6 @@ impl Link {
     fn base(byte: u8) -> Self {
         Link {
             prev: 0,
-            byte,
             first: byte,
         }
     }
@@ -1677,10 +1647,9 @@ impl Link {
 impl DerivationBase {
     // TODO: this has self type to make it clear we might depend on the old in a future
     // optimization. However, that has no practical purpose right now.
-    fn derive(&self, byte: u8) -> Link {
+    fn derive(&self) -> Link {
         Link {
             prev: self.code,
-            byte,
             first: self.first,
         }
     }
@@ -2511,5 +2480,45 @@ mod tests {
                 reference = Some(output);
             }
         }
+    }
+
+    #[test]
+    fn table_derive() {
+        let mut table = super::Table::new();
+        table.init(8);
+
+        let mut base = super::DerivationBase {
+            code: 1,
+            first: 0x1,
+        };
+
+        for i in 0..16 {
+            table.derive(&base, i);
+            base.code = (table.len - 1) as u16;
+        }
+
+        let last = (table.len - 1) as u16;
+        assert_eq!(table.first_of(last), 1);
+        assert_eq!(table.code_len(last), 17);
+        assert_eq!(table.suffixes[last as usize], [15, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(table.chain[last as usize].prev, last - 1);
+        assert_eq!(
+            table.suffixes[last as usize - 1],
+            [7, 8, 9, 10, 11, 12, 13, 14]
+        );
+        assert_eq!(table.chain[last as usize - 1].prev, last - 9);
+        assert_eq!(table.suffixes[last as usize - 9], [1, 0, 1, 2, 3, 4, 5, 6]);
+        assert_eq!(table.chain[last as usize - 9].prev, 0);
+
+        let mut out = [0; 17];
+        table.reconstruct(last, &mut out);
+        assert_eq!(out[..8], [1, 0, 1, 2, 3, 4, 5, 6]);
+        assert_eq!(out[8..16], [7, 8, 9, 10, 11, 12, 13, 14]);
+        assert_eq!(out[16..], [15]);
+
+        out.fill(0x42);
+        table.reconstruct(last - 1, &mut out[..16]);
+        assert_eq!(out[..8], [1, 0, 1, 2, 3, 4, 5, 6]);
+        assert_eq!(out[8..16], [7, 8, 9, 10, 11, 12, 13, 14]);
     }
 }
