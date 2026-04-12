@@ -1096,19 +1096,14 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                     self.next_code += burst_targets.len() as u16;
                 }
 
-                if let Some(n4) = burst_targets.as_mut_array::<4>() {
-                    let burst = *burst.as_array::<4>().unwrap();
-                    self.table.reconstruct_4(burst, n4, &mut burst_byte);
-                } else if let Some(n5) = burst_targets.as_mut_array::<5>() {
-                    let n4 = n5.first_chunk_mut::<4>().unwrap();
-                    let c4 = *burst[..4].as_array::<4>().unwrap();
-                    self.table.reconstruct_4(c4, n4, &mut burst_byte);
-                    burst_byte[4] = self.table.reconstruct(burst[4], n5[4]);
-                } else {
-                    for ((&burst, target), byte) in
-                        burst.iter().zip(&mut *burst_targets).zip(&mut burst_byte)
-                    {
-                        *byte = self.table.reconstruct(burst, target);
+                for ((&independent_code, target), byte) in
+                    burst.iter().zip(&mut *burst_targets).zip(&mut burst_byte)
+                {
+                    if target.len() > 0 && independent_code < clear_code {
+                        *byte = independent_code as u8;
+                        target[0] = *byte;
+                    } else {
+                        *byte = self.table.reconstruct(independent_code, target);
                     }
                 }
 
@@ -1610,7 +1605,7 @@ impl Table {
 
         // Short path: whole value fits in one Q-chunk.
         if o <= STREAMING_Q {
-            out.copy_from_slice(&suffix[..o]);
+            Self::non_memcpy(out, suffix);
             return self.chain[code_index].first;
         }
 
@@ -1618,7 +1613,7 @@ impl Table {
         // have a full chunk when this the cdde depth is aligned.
         let tail_len = ((o - 1) & (STREAMING_Q - 1)) + 1;
         let tail_start = o - tail_len;
-        out[tail_start..].copy_from_slice(&suffix[..tail_len]);
+        Self::non_memcpy(&mut out[tail_start..], suffix);
 
         let first = self.chain[code_index].first;
         let mut c = self.chain[code_index].prev;
@@ -1648,32 +1643,6 @@ impl Table {
             8 => out[..8].copy_from_slice(&from[..8]),
             _ => unreachable!(),
         }
-    }
-
-    fn reconstruct_4(&self, code: [Code; 4], out: &mut [&mut [u8]; 4], byte: &mut [u8; BURST]) {
-        let [a, b, c, d] = out;
-
-        if a.len() <= STREAMING_Q && b.len() <= STREAMING_Q && c.len() <= STREAMING_Q && d.len() <= STREAMING_Q {
-            let cis = code.map(|x| usize::from(x) & MASK);
-            let [sa, sb, sc, sd] = cis.map(|i| self.suffixes[i]);
-
-            Self::non_memcpy(a, sa);
-            Self::non_memcpy(b, sb);
-            Self::non_memcpy(c, sc);
-            Self::non_memcpy(d, sd);
-
-            byte[0] = self.chain[cis[0]].first;
-            byte[1] = self.chain[cis[1]].first;
-            byte[2] = self.chain[cis[2]].first;
-            byte[3] = self.chain[cis[3]].first;
-
-            return;
-        }
-
-        byte[0] = self.reconstruct(code[0], a);
-        byte[1] = self.reconstruct(code[1], b);
-        byte[2] = self.reconstruct(code[2], c);
-        byte[3] = self.reconstruct(code[3], d);
     }
 }
 
