@@ -955,9 +955,7 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
             // wasn't smart enough to fully optimize out the init code so that appears outside the
             // loop.
             let mut burst = [0; BURST];
-            let mut burst_byte_len = [0u16; BURST];
             let mut burst_byte = [0u8; BURST];
-            let mut target: [&mut [u8]; BURST] = Default::default();
 
             loop {
                 // In particular, we *also* break if the output buffer is still empty. Especially
@@ -1030,19 +1028,21 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                 let clear_code = self.clear_code;
                 let next_code = self.next_code;
 
+                let mut last_decoded_bytes = None;
+
                 // A burst is a sequence of decodes that are completely independent of each other. This
                 // is the case if neither is an end code, a clear code, or a next code, i.e. we have
                 // all of them in the decoding table and thus known their depths, and additionally if
                 // we can decode them directly into the output buffer.
-                for b in &burst[..cnt] {
-                    // We can commit the previous burst code, and will take a slice from the output
-                    // buffer. This also avoids the bounds check in the tight loop later.
-                    if burst_size > 0 {
-                        let len = burst_byte_len[burst_size - 1];
-                        let (into, tail) = out.split_at_mut(usize::from(len));
-                        target[burst_size - 1] = into;
-                        out = tail;
-                    }
+                let codes = &burst[..cnt];
+                let mut code_iter = codes.iter();
+                let mut broken_burst = true;
+
+                loop {
+                    let Some(&read_code) = code_iter.next() else {
+                        broken_burst = false;
+                        break;
+                    };
 
                     // Check that we don't overflow the code size with all codes we burst decode.
                     burst_size += 1;
@@ -1050,8 +1050,6 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                     if burst_size > usize::from(left_before_size_switch) {
                         break;
                     }
-
-                    let read_code = *b;
 
                     // A burst code can't be special. Fused check: since
                     // end_code = clear_code + 1, `read_code - clear_code < 2`
@@ -1076,38 +1074,66 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                         }
                     }
 
-                    burst_byte_len[burst_size - 1] = len;
-                }
-
-                self.code_buffer.consume_bits(burst_size as u8);
-                have_yet_to_decode_data = false;
-
-                // Note that the very last code in the burst buffer doesn't actually belong to the
-                // burst itself. TODO: sometimes it could, we just don't differentiate between the
-                // breaks and a loop end condition above. That may be a speed advantage?
-                let (&new_code, burst) = burst[..burst_size].split_last().unwrap();
-
-                // The very tight loop for restoring the actual burst. These can be reconstructed in
-                // parallel since none of them depend on a prior constructed. Only the derivation of
-                // new codes is not parallel. There are no size changes here either.
-                let burst_targets = &mut target[..burst_size - 1];
-
-                if !self.table.is_full() {
-                    self.next_code += burst_targets.len() as u16;
-                }
-
-                for ((&independent_code, target), byte) in
-                    burst.iter().zip(&mut *burst_targets).zip(&mut burst_byte)
-                {
-                    if target.len() > 0 && independent_code < clear_code {
-                        *byte = independent_code as u8;
-                        target[0] = *byte;
+                    if read_code < clear_code {
+                        let target = out.split_off_first_mut().unwrap();
+                        burst_byte[burst_size - 1] = read_code as u8;
+                        *target = burst_byte[burst_size - 1];
+                        debug_assert_eq!(1, self.table.depths[read_code as usize]);
+                        last_decoded_bytes = Some(core::slice::from_mut(target));
                     } else {
-                        *byte = self.table.reconstruct(independent_code, target);
+                        debug_assert_eq!(len, self.table.depths[read_code as usize]);
+                        // If permissible, we do limited *overwrite* into the output buffer to save
+                        // a lot of instructions that would be spent on computing exact copy
+                        // lengths. That is instead of writing 2 individual bytes for a length 2
+                        // code we use unaligned 64-bit stores regardless of code depth. This
+                        // requires us to have more buffer space than required but that is almost
+                        // always the case until we get to the end.
+                        let chunk_len = len.div_ceil(8);
+                        let chunked = out.as_chunks_mut::<8>().0;
+
+                        let target;
+                        if chunked.len() >= usize::from(chunk_len) {
+                            let relaxed = &mut chunked[..usize::from(chunk_len)];
+                            burst_byte[burst_size - 1] =
+                                self.table.reconstruct_simple(read_code, relaxed);
+                            target = out.split_off_mut(..usize::from(len)).unwrap();
+                        } else {
+                            target = out.split_off_mut(..usize::from(len)).unwrap();
+                            burst_byte[burst_size - 1] = self.table.reconstruct(read_code, target);
+                        }
+
+                        last_decoded_bytes = Some(target);
                     }
                 }
 
-                self.table.derive_burst(&mut deriv, burst, &burst_byte[..]);
+                self.code_buffer.consume_bits(burst_size as u8);
+                debug_assert!(burst_size > 0);
+                have_yet_to_decode_data = false;
+
+                if !broken_burst {
+                    if !self.table.is_full() {
+                        self.next_code += cnt as u16;
+                        self.table.derive_burst(&mut deriv, codes, &burst_byte[..]);
+                    }
+
+                    debug_assert!(self.next_code <= size_switch_at);
+                    code_link = Some(DerivationBase {
+                        code: burst[cnt - 1],
+                        first: burst_byte[cnt - 1],
+                    });
+
+                    last_decoded = last_decoded_bytes.map(|x| &*x);
+                    continue;
+                }
+
+                // A code after which we potentially have to handle a size switch, or an
+                // end-of-buffer, or an special/invalid code.
+                let (&new_code, burst) = burst[..burst_size].split_last().unwrap();
+
+                if !self.table.is_full() {
+                    self.next_code += burst_size as u16 - 1;
+                    self.table.derive_burst(&mut deriv, &burst, &burst_byte[..]);
+                }
 
                 // Now handle the special codes.
                 if new_code == self.clear_code {
@@ -1130,23 +1156,22 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                     break;
                 }
 
-                let required_len = if new_code == self.next_code {
-                    self.table.code_len(deriv.code) + 1
-                } else {
-                    self.table.code_len(new_code)
-                };
-
                 // We need the decoded data of the new code if it is the `next_code`. This is the
                 // special case of LZW decoding that is demonstrated by `banana` (or form cScSc). In
                 // all other cases we only need the first character of the decoded data.
                 let have_next_code = new_code == self.next_code;
 
+                let required_len = if have_next_code {
+                    self.table.code_len(deriv.code) + 1
+                } else {
+                    self.table.code_len(new_code)
+                };
+
                 // Update the slice holding the last decoded word.
                 if have_next_code {
-                    // If we did not have any burst code, we still hold that slice in the buffer.
-                    if let Some(new_last) = target[..burst_size - 1].last_mut() {
-                        let slice = core::mem::replace(new_last, &mut []);
-                        last_decoded = Some(&*slice);
+                    if last_decoded_bytes.is_some() {
+                        // If we did not have any burst code, we still hold that slice in the buffer.
+                        last_decoded = last_decoded_bytes.map(|x| &*x);
                     }
                 }
 
@@ -1630,9 +1655,41 @@ impl Table {
         first
     }
 
+    fn reconstruct_simple(&self, code: Code, out: &mut [[u8; 8]]) -> u8 {
+        let code_index = usize::from(code) & MASK;
+        let suffix = self.suffixes[code_index];
+
+        let Some((last, prefix)) = out.split_last_mut() else {
+            return 0;
+        };
+
+        // Short path: whole value fits in one Q-chunk.
+        *last = suffix;
+
+        if prefix.is_empty() {
+            return self.chain[code_index].first;
+        }
+
+        // Tail: last incomplete chunk. Note: this is not the same as as_chunks_mut's tail since we
+        // have a full chunk when this the cdde depth is aligned.
+        let first = self.chain[code_index].first;
+        let mut c = self.chain[code_index].prev;
+        // Full 8-byte chunks, walking the prefix chain backward.
+        // chunks_exact_mut guarantees each chunk has exactly STREAMING_Q bytes,
+        // so LLVM compiles copy_from_slice to a single qword move with no
+        // bounds check. The `.rev()` walks from end to start.
+        for chunk in prefix.iter_mut().rev() {
+            let code_index = usize::from(c) & MASK;
+            *chunk = self.suffixes[code_index];
+            c = self.chain[code_index].prev;
+        }
+
+        first
+    }
+
     fn non_memcpy(out: &mut [u8], from: [u8; STREAMING_Q]) {
         match out.len() {
-            0 => {},
+            0 => {}
             1 => out[0] = from[0],
             2 => out[..2].copy_from_slice(&from[..2]),
             3 => out[..3].copy_from_slice(&from[..3]),

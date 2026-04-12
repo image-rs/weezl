@@ -41,7 +41,8 @@ fn decode_all(
     let mut cursor = out;
     let mut written = 0;
     loop {
-        let r = dec.decode_bytes(inp, cursor);
+        let maxlen = cursor.len().min(8192);
+        let r = dec.decode_bytes(inp, &mut cursor[..maxlen]);
         inp = &inp[r.consumed_in..];
         written += r.consumed_out;
         cursor = &mut std::mem::take(&mut cursor)[r.consumed_out..];
