@@ -847,22 +847,35 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
         // Track an empty `burst` (see below) means we made no progress.
         let mut have_yet_to_decode_data = false;
 
-        // Restore the previous state, if any.
-        if code_link.is_some() {
+        // Drain the internal buffer from a previous call. Data lands here
+        // when a decoded code was longer than the caller's output buffer
+        // (the `is_in_buffer` path below), or after a clear code that
+        // interrupted mid-stream. The drain must happen unconditionally —
+        // gating it on `code_link.is_some()` would skip it after a clear
+        // code sets `code_link = None`, losing buffered data (#68).
+        {
             let remain = self.buffer.buffer();
-            // Check if we can fully finish the buffer.
             if remain.len() > out.len() {
                 if out.is_empty() {
-                    // This also implies the buffer is _not_ empty and we will not enter any
-                    // decoding loop.
-                    status = Ok(LzwStatus::NoProgress);
+                    if remain.is_empty() {
+                        // Truly nothing to do — no buffered data, no output space.
+                        status = Ok(LzwStatus::NoProgress);
+                        have_yet_to_decode_data = true;
+                    } else {
+                        // Buffer has data but caller gave empty output.
+                        status = Ok(LzwStatus::NoProgress);
+                    }
                 } else {
                     out.copy_from_slice(&remain[..out.len()]);
                     self.buffer.consume(out.len());
                     out = &mut [];
                 }
             } else if remain.is_empty() {
-                status = Ok(LzwStatus::NoProgress);
+                if code_link.is_none() {
+                    // No buffered data and no pending code — can't make progress
+                    // until the caller provides more input or we read a new code.
+                    status = Ok(LzwStatus::NoProgress);
+                }
                 have_yet_to_decode_data = true;
             } else {
                 let consumed = remain.len();
