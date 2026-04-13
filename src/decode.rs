@@ -905,22 +905,32 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
         // Track an empty `burst` (see below) means we made no progress.
         let mut have_yet_to_decode_data = false;
 
-        // Restore the previous state, if any.
-        if code_link.is_some() {
+        // Drain the internal buffer unconditionally. Data lands here when
+        // a decoded code was longer than the caller's output buffer, or
+        // after a clear code that interrupted mid-stream. Must not be
+        // gated on code_link.is_some() — that skips the drain after a
+        // clear code sets code_link=None, losing buffered data (#68).
+        {
             let remain = self.buffer.buffer();
-            // Check if we can fully finish the buffer.
             if remain.len() > out.len() {
                 if out.is_empty() {
-                    // This also implies the buffer is _not_ empty and we will not enter any
-                    // decoding loop.
-                    status = Ok(LzwStatus::NoProgress);
+                    if remain.is_empty() {
+                        // Truly nothing — no buffer data, no output space.
+                        status = Ok(LzwStatus::NoProgress);
+                        have_yet_to_decode_data = true;
+                    } else {
+                        // Buffer has data but caller gave empty output.
+                        status = Ok(LzwStatus::NoProgress);
+                    }
                 } else {
                     out.copy_from_slice(&remain[..out.len()]);
                     self.buffer.consume(out.len());
                     out = &mut [];
                 }
             } else if remain.is_empty() {
-                status = Ok(LzwStatus::NoProgress);
+                if code_link.is_none() {
+                    status = Ok(LzwStatus::NoProgress);
+                }
                 have_yet_to_decode_data = true;
             } else {
                 let consumed = remain.len();
@@ -1088,11 +1098,19 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                         // code we use unaligned 64-bit stores regardless of code depth. This
                         // requires us to have more buffer space than required but that is almost
                         // always the case until we get to the end.
+                        //
+                        // The overwrite may clobber up to 7 bytes past the code length. Those
+                        // bytes must be within the output buffer and must be overwritten by
+                        // subsequent codes before the caller reads them. With yield_on_full or
+                        // small buffers, the decoder may return before that happens. Require at
+                        // least 8 bytes of slack past the code length to ensure the clobbered
+                        // bytes stay in uncommitted territory.
                         let chunk_len = len.div_ceil(8);
+                        let slack = out.len() - usize::from(len);
                         let chunked = out.as_chunks_mut::<8>().0;
 
                         let target;
-                        if chunked.len() >= usize::from(chunk_len) {
+                        if chunked.len() >= usize::from(chunk_len) && slack >= 8 {
                             let relaxed = &mut chunked[..usize::from(chunk_len)];
                             burst_byte[burst_size - 1] =
                                 self.table.reconstruct_simple(read_code, relaxed);
@@ -1116,7 +1134,7 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                         self.table.derive_burst(&mut deriv, codes, &burst_byte[..]);
                     }
 
-                    debug_assert!(self.next_code <= size_switch_at);
+                    debug_assert!(self.table.is_full() || self.next_code <= size_switch_at);
                     code_link = Some(DerivationBase {
                         code: burst[cnt - 1],
                         first: burst_byte[cnt - 1],
