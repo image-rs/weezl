@@ -601,6 +601,16 @@ impl<B: Buffer> EncodeState<B> {
             clear_code,
             buffer: B::new(min_size),
         };
+        // At min_size 0 or 1 the alphabet plus clear/end codes already
+        // exhaust (or exceed) the starting max_code, so the initial clear
+        // must be emitted at a bumped code size. A single bump is always
+        // sufficient (see bump_if_lowbit in decode.rs for the proof).
+        // Normal-size (>= 2) streams fall straight through.
+        if state.tree.keys.len() > usize::from(state.buffer.max_code())
+            && state.buffer.code_size() < MAX_CODESIZE
+        {
+            state.buffer.bump_code_size();
+        }
         state.buffer_code(clear_code);
         state
     }
@@ -1033,7 +1043,7 @@ impl From<FullKey> for CompressedKey {
 #[cfg(test)]
 mod tests {
     use super::{BitOrder, Encoder, LzwError, LzwStatus};
-    use crate::alloc::vec::Vec;
+    use crate::alloc::{vec, vec::Vec};
     use crate::decode::Decoder;
     #[cfg(feature = "std")]
     use crate::StreamBuf;
@@ -1083,14 +1093,24 @@ mod tests {
 
         let remaining = { free }.len();
         let len = compare.len() - remaining;
-        assert_eq!(todo, &[]);
+        assert_eq!(todo, &[] as &[u8]);
         assert_eq!(compare[..len], [0, 1, 0]);
     }
 
     #[test]
-    #[should_panic]
-    fn invalid_code_size_low() {
-        let _ = Encoder::new(BitOrder::Msb, 1);
+    fn code_size_low_accepted() {
+        // Encoder::new no longer rejects sizes 0 and 1. Construction must
+        // complete without panicking, and the encoder must successfully
+        // emit a degenerate single-byte stream at each size.
+        for size in 0u8..=1 {
+            let _ = Encoder::new(BitOrder::Msb, size);
+            let _ = Encoder::new(BitOrder::Lsb, size);
+            // `0` is the only alphabet byte at min_size=0, and one of two at size=1;
+            // both accept it.
+            let encoded = Encoder::new(BitOrder::Lsb, size).encode(&[0]).unwrap();
+            let decoded = Decoder::new(BitOrder::Lsb, size).decode(&encoded).unwrap();
+            assert_eq!(decoded, vec![0], "lsb size={}", size);
+        }
     }
 
     #[test]
