@@ -93,5 +93,9 @@ required-features = ["std"]
 name = "end_of_buffer"
 required-features = ["alloc"]
 
+[[test]]
+name = "fuzz_panic_regression"
+required-features = ["alloc"]
+
 [package.metadata.docs.rs]
 all-features = true
