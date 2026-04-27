@@ -89,8 +89,9 @@ trait Stateful {
 /// nice if the index is in a separate register as a result of this AND-masking anyways: we can use
 /// bitshifts extracting the other two fields with the same input.
 #[derive(Clone, Copy, Default)]
+#[repr(packed)]
 struct Link {
-    prev: Code,
+    prev: u16,
     first: u8,
 }
 
@@ -1511,10 +1512,6 @@ impl Table {
         self.chain[usize::from(code) & MASK].first
     }
 
-    fn len(&self) -> usize {
-        self.len
-    }
-
     fn code_len(&self, code: Code) -> u16 {
         self.depths[usize::from(code) & MASK]
     }
@@ -1575,7 +1572,7 @@ impl Table {
         Self::non_memcpy(&mut out[tail_start..], suffix);
 
         let first = self.chain[code_index].first;
-        let mut c = self.chain[code_index].prev;
+        let mut c = self.chain[code_index].previous_code();
         // Full 8-byte chunks, walking the prefix chain backward.
         // chunks_exact_mut guarantees each chunk has exactly STREAMING_Q bytes,
         // so LLVM compiles copy_from_slice to a single qword move with no
@@ -1583,7 +1580,7 @@ impl Table {
         for chunk in out[..tail_start].chunks_exact_mut(STREAMING_Q).rev() {
             let code_index = usize::from(c) & MASK;
             chunk.copy_from_slice(&self.suffixes[code_index]);
-            c = self.chain[code_index].prev;
+            c = self.chain[code_index].previous_code();
         }
 
         first
@@ -1607,7 +1604,7 @@ impl Table {
         // Tail: last incomplete chunk. Note: this is not the same as as_chunks_mut's tail since we
         // have a full chunk when this the cdde depth is aligned.
         let first = self.chain[code_index].first;
-        let mut c = self.chain[code_index].prev;
+        let mut c = self.chain[code_index].previous_code();
         // Full 8-byte chunks, walking the prefix chain backward.
         // chunks_exact_mut guarantees each chunk has exactly STREAMING_Q bytes,
         // so LLVM compiles copy_from_slice to a single qword move with no
@@ -1615,7 +1612,7 @@ impl Table {
         for chunk in prefix.iter_mut().rev() {
             let code_index = usize::from(c) & MASK;
             *chunk = self.suffixes[code_index];
-            c = self.chain[code_index].prev;
+            c = self.chain[code_index].previous_code();
         }
 
         first
@@ -1647,9 +1644,13 @@ fn boxed_arr<T: Clone + Default, const N: usize>() -> Box<[T; N]> {
 }
 
 impl Link {
+    fn previous_code(&self) -> u16 {
+        self.prev
+    }
+
     fn base(byte: u8) -> Self {
         Link {
-            prev: 0,
+            prev: 0u16,
             first: byte,
         }
     }
@@ -1785,14 +1786,14 @@ mod tests {
         assert_eq!(table.first_of(last), 1);
         assert_eq!(table.code_len(last), 17);
         assert_eq!(table.suffixes[last as usize], [15, 0, 0, 0, 0, 0, 0, 0]);
-        assert_eq!(table.chain[last as usize].prev, last - 1);
+        assert_eq!(table.chain[last as usize].previous_code(), last - 1);
         assert_eq!(
             table.suffixes[last as usize - 1],
             [7, 8, 9, 10, 11, 12, 13, 14]
         );
-        assert_eq!(table.chain[last as usize - 1].prev, last - 9);
+        assert_eq!(table.chain[last as usize - 1].previous_code(), last - 9);
         assert_eq!(table.suffixes[last as usize - 9], [1, 0, 1, 2, 3, 4, 5, 6]);
-        assert_eq!(table.chain[last as usize - 9].prev, 0);
+        assert_eq!(table.chain[last as usize - 9].previous_code(), 0);
 
         let mut out = [0; 17];
         table.reconstruct(last, &mut out);
