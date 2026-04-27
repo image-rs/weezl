@@ -61,11 +61,6 @@ name = "msb8"
 harness = false
 required-features = ["std"]
 
-[[bench]]
-name = "strategy_compare"
-harness = false
-required-features = ["alloc"]
-
 [[example]]
 name = "lzw-compress"
 required-features = ["std"]
@@ -92,10 +87,6 @@ required-features = ["std"]
 
 [[test]]
 name = "end_of_buffer"
-required-features = ["alloc"]
-
-[[test]]
-name = "streaming_parity"
 required-features = ["alloc"]
 
 [package.metadata.docs.rs]
