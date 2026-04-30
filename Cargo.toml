@@ -98,5 +98,9 @@ required-features = ["alloc"]
 name = "fuzz_panic_regression"
 required-features = ["alloc"]
 
+[[test]]
+name = "progress_into_buffer"
+required-features = ["alloc"]
+
 [package.metadata.docs.rs]
 all-features = true
