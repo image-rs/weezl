@@ -39,3 +39,7 @@ name = "roundtrip_all"
 path = "fuzz_targets/roundtrip_all.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "lowbit"
+path = "fuzz_targets/lowbit.rs"

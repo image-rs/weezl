@@ -61,6 +61,11 @@ name = "msb8"
 harness = false
 required-features = ["std"]
 
+[[bench]]
+name = "lowbit"
+harness = false
+required-features = ["std"]
+
 [[example]]
 name = "lzw-compress"
 required-features = ["std"]
@@ -87,6 +92,10 @@ required-features = ["std"]
 
 [[test]]
 name = "end_of_buffer"
+required-features = ["alloc"]
+
+[[test]]
+name = "fuzz_panic_regression"
 required-features = ["alloc"]
 
 [package.metadata.docs.rs]
