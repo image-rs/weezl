@@ -179,6 +179,8 @@ struct Buffer {
     bytes: Box<[u8]>,
     read_mark: usize,
     write_mark: usize,
+    /// Co-operatively used to track if decoding progress was written to the buffer, not `out`.
+    pub(crate) reconstructed_another_code: bool,
 }
 
 /// Mask for indexing into fixed-size arrays. Since MAX_ENTRIES = 4096 = 2^12,
@@ -795,6 +797,9 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
         // The status, which is written to on an invalid code.
         let mut status = Ok(LzwStatus::Ok);
 
+        // Reset if a value was restored into the buffer.
+        self.buffer.reconstructed_another_code = false;
+
         match self.last.take() {
             // No last state? This is the first code after a reset?
             None => {
@@ -1161,8 +1166,11 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
         }
 
         // Ensure we don't indicate that no progress was made if we read some bytes from the input
-        // (which is progress).
-        if o_in > inp.len() {
+        // (which is progress). The field `new_value` will have been written if any reconstruction
+        // was buffered. This is mostly a fail-safe in case the above loop does nothing else but
+        // buffer the value, without consuming any of the bytes. (It really should right now but
+        // that may change and it's not structurally required to).
+        if o_in > inp.len() || self.buffer.reconstructed_another_code {
             if let Ok(LzwStatus::NoProgress) = status {
                 status = Ok(LzwStatus::Ok);
             }
@@ -1403,6 +1411,7 @@ impl Buffer {
             bytes: vec![0; MAX_ENTRIES].into_boxed_slice(),
             read_mark: 0,
             write_mark: 0,
+            reconstructed_another_code: false,
         }
     }
 
@@ -1412,6 +1421,7 @@ impl Buffer {
     /// with the reconstruction of `B`.
     fn fill_cscsc(&mut self) -> u8 {
         self.bytes[self.write_mark] = self.bytes[0];
+        self.reconstructed_another_code = true;
         self.write_mark += 1;
         self.read_mark = 0;
         self.bytes[0]
@@ -1425,6 +1435,7 @@ impl Buffer {
         let mut memory = core::mem::replace(&mut self.bytes, Box::default());
 
         let out = &mut memory[..usize::from(depth)];
+        self.reconstructed_another_code = true;
         let last = table.reconstruct(code, out);
 
         self.bytes = memory;
