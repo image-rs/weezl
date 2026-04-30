@@ -813,26 +813,23 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                         } else if init_code == self.end_code {
                             self.has_ended = true;
                             status = Ok(LzwStatus::Done);
-                        } else if self.table.is_empty() {
-                            if self.implicit_reset {
+                        } else {
+                            // Any non-clear or end code.
+                            if self.table.is_empty() && self.implicit_reset {
                                 self.init_tables();
+                            } else if self.table.is_empty() {
+                                status = Err(LzwError::InvalidCode);
+                            }
 
+                            if !self.table.is_empty() {
+                                // Reconstruct the first code in the buffer if this wasn't supposed
+                                // to be treated as a fatal error.
                                 self.buffer.fill_reconstruct(&self.table, init_code);
                                 code_link = Some(DerivationBase {
                                     code: init_code,
                                     first: self.table.first_of(init_code),
                                 });
-                            } else {
-                                // We require an explicit reset.
-                                status = Err(LzwError::InvalidCode);
                             }
-                        } else {
-                            // Reconstruct the first code in the buffer.
-                            self.buffer.fill_reconstruct(&self.table, init_code);
-                            code_link = Some(DerivationBase {
-                                code: init_code,
-                                first: self.table.first_of(init_code),
-                            });
                         }
                     }
                 }
@@ -844,32 +841,23 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
         // Track an empty `burst` (see below) means we made no progress.
         let mut have_yet_to_decode_data = false;
 
-        // Drain the internal buffer unconditionally. Data lands here when
-        // a decoded code was longer than the caller's output buffer, or
-        // after a clear code that interrupted mid-stream. Must not be
-        // gated on code_link.is_some() — that skips the drain after a
-        // clear code sets code_link=None, losing buffered data (#68).
-        {
+        // Drain the internal buffer. Data lands there when a decoded code was longer than the
+        // caller's output buffer, or from the first code after a clear code that interrupted
+        // mid-stream. Either way we have set up `code_link`.
+        if code_link.is_some() {
             let remain = self.buffer.buffer();
             if remain.len() > out.len() {
                 if out.is_empty() {
-                    if remain.is_empty() {
-                        // Truly nothing — no buffer data, no output space.
-                        status = Ok(LzwStatus::NoProgress);
-                        have_yet_to_decode_data = true;
-                    } else {
-                        // Buffer has data but caller gave empty output.
-                        status = Ok(LzwStatus::NoProgress);
-                    }
+                    status = Ok(LzwStatus::NoProgress);
+                    // Truly nothing — no buffer data, no output space.
+                    have_yet_to_decode_data = remain.is_empty();
+                    // Buffer has data but caller gave empty output.
                 } else {
                     out.copy_from_slice(&remain[..out.len()]);
                     self.buffer.consume(out.len());
                     out = &mut [];
                 }
             } else if remain.is_empty() {
-                if code_link.is_none() {
-                    status = Ok(LzwStatus::NoProgress);
-                }
                 have_yet_to_decode_data = true;
             } else {
                 let consumed = remain.len();

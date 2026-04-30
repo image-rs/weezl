@@ -1,3 +1,4 @@
+#![cfg(feature = "alloc")]
 //! Regression tests for yield_on_full_buffer correctness (issue #68).
 //!
 //! The decoder's yield_on_full mode is used for libtiff compatibility:
