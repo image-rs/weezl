@@ -89,7 +89,7 @@ trait Stateful {
 /// nice if the index is in a separate register as a result of this AND-masking anyways: we can use
 /// bitshifts extracting the other two fields with the same input.
 #[derive(Clone, Copy, Default)]
-#[repr(packed)]
+#[repr(C, packed)]
 struct Link {
     prev: u16,
     first: u8,
@@ -500,8 +500,8 @@ impl<'d, W: Write> IntoStream<'d, W> {
         let write_bytes = &mut bytes_written;
 
         let outbuf: &mut [u8] =
-            match { buffer.get_or_insert_with(|| StreamBuf::Owned(vec![0u8; *default_size])) } {
-                StreamBuf::Borrowed(slice) => &mut *slice,
+            match buffer.get_or_insert_with(|| StreamBuf::Owned(vec![0u8; *default_size])) {
+                StreamBuf::Borrowed(slice) => slice,
                 StreamBuf::Owned(vec) => &mut *vec,
             };
         assert!(!outbuf.is_empty());
@@ -1104,7 +1104,7 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
 
                 if !self.table.is_full() {
                     self.next_code += burst_size as u16 - 1;
-                    self.table.derive_burst(&mut deriv, &burst, &burst_byte[..]);
+                    self.table.derive_burst(&mut deriv, burst, &burst_byte[..]);
                 }
 
                 // Now handle the special codes.
@@ -1179,7 +1179,7 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
 
                         // We don't *actually* expect the unwrap to happen. Each source is at least 1
                         // byte long. But llvm doesn't know this (too much indirect loads and cases).
-                        cha = source.get(0).map(|x| *x).unwrap_or(0);
+                        cha = source.first().copied().unwrap_or(0);
                         target[..source.len()].copy_from_slice(source);
                         target[source.len()..][0] = cha;
                     } else {
@@ -1357,7 +1357,7 @@ impl CodeBuffer for MsbBuffer {
             self.bit_buffer = 0;
         } else {
             // bits < self.bits so this must be smaller than the number size.
-            self.bit_buffer = self.bit_buffer << bits;
+            self.bit_buffer <<= bits;
         }
 
         self.bits = self.bits.wrapping_sub(bits);
@@ -1444,7 +1444,7 @@ impl CodeBuffer for LsbBuffer {
             consumed = consumed_after;
 
             *b = (bit_buffer & mask) as u16;
-            bit_buffer = bit_buffer >> self.code_size;
+            bit_buffer >>= self.code_size;
         }
 
         cnt
@@ -1458,7 +1458,7 @@ impl CodeBuffer for LsbBuffer {
             self.bit_buffer = 0;
         } else {
             // bits < self.bits so this must be smaller than the number size.
-            self.bit_buffer = self.bit_buffer >> bits;
+            self.bit_buffer >>= bits;
         }
 
         self.bits = self.bits.wrapping_sub(bits);
