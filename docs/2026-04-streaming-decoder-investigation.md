@@ -1,5 +1,7 @@
 # `TableStrategy::Streaming` investigation — session log
 
+(ML generated log, basis of a contribution in PR #69)
+
 This document is the full record of the investigation that produced
 `TableStrategy::Streaming` in weezl. It spans from the initial audit of
 the PR that added `TableStrategy::Chunked` (#60), through a three-way
