@@ -102,5 +102,9 @@ required-features = ["alloc"]
 name = "progress_into_buffer"
 required-features = ["alloc"]
 
+[[test]]
+name = "regression_gif"
+required-features = ["alloc"]
+
 [package.metadata.docs.rs]
 all-features = true
