@@ -12,8 +12,7 @@ fn regression_gif_97() {
     // symbol 110 that is even greater than the next-code.
     let data = &[0x32];
 
-    let mut decoder = decode::Configuration::new(BitOrder::Lsb, 1)
-        .build();
+    let mut decoder = decode::Configuration::new(BitOrder::Lsb, 1).build();
 
     let mut output = vec![];
     let result = decoder.into_vec(&mut output).decode_all(data);
@@ -24,8 +23,7 @@ fn regression_gif_97() {
 
 #[test]
 fn encoder_roundtrip() {
-    let mut encoder = encode::Configuration::new(BitOrder::Lsb, 1)
-        .build();
+    let mut encoder = encode::Configuration::new(BitOrder::Lsb, 1).build();
 
     let mut output = vec![];
     let result = encoder.into_vec(&mut output).encode_all(&[0]);

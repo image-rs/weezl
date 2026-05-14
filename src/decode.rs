@@ -834,13 +834,9 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
             None => {
                 match self.next_symbol(&mut inp) {
                     // Plainly invalid code.
-                    Some(code) if code > self.next_code => {
-                        status = Err(LzwError::InvalidCode)
-                    }
+                    Some(code) if code > self.next_code => status = Err(LzwError::InvalidCode),
                     // next_code would require an actual predecessor.
-                    Some(code) if code == self.next_code => {
-                        status = Err(LzwError::InvalidCode)
-                    }
+                    Some(code) if code == self.next_code => status = Err(LzwError::InvalidCode),
                     // No more symbols available and nothing decoded yet.
                     // Assume that we didn't make progress, this may get reset to Done if we read
                     // some bytes from the input.
