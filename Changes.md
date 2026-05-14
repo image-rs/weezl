@@ -1,3 +1,25 @@
+## Version 0.2.0
+
+- Overhaul of the decoder algorithm, inspired by [Wuffs], to write 8 bytes at
+  once and construct a tree accordingly. Many streams are now decoded with GB/s
+  performance (#77). See the tradeoff in the next bullet point.
+- Initialization of a decoder is now more expensive as we pre-allocate fixed
+  size tables. This is so that decoding no longer performs bounds checks in
+  most of its inner loops which significantly affects performance. If this is
+  prohibitive for your use-case, please open an issue to discuss.
+- 0 and 1 bit data-sizes are now fully supported. Note that 0-bit data uses an
+  initial 2 bit code width, and 1-bit data uses 3 bits with TIFF size switch
+  (#67, #78).
+
+Fixes:
+- Decoding codes with an initial code size of 12 sometimes failed to detect
+  malformed streams, causing a panic or malformed output (#64).
+- A small output buffer can no longer cause an erroneous `NoProgress` status
+  when the progress was filling (only) the internal word buffer (#68). Decoding
+  from a stream or other abstraction could silently forget data.
+
+[Wuffs]: https://github.com/google/wuffs/tree/main/std/lzw
+
 ## Version 0.1.12
 
 - Further adjusted a debug assertion for TIFF compatibility. It still had one
