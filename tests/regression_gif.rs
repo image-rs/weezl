@@ -1,4 +1,4 @@
-use weezl::{decode, BitOrder};
+use weezl::{decode, encode, BitOrder};
 
 /// See:https://github.com/image-rs/image-gif/issues/97
 #[test]
@@ -20,4 +20,17 @@ fn regression_gif_97() {
     assert!(matches!(result.status, Ok(weezl::LzwStatus::Ok)));
     assert_eq!(result.consumed_in, 1);
     assert_eq!(output, &[0]);
+}
+
+#[test]
+fn encoder_roundtrip() {
+    let mut encoder = encode::Configuration::new(BitOrder::Lsb, 1)
+        .build();
+
+    let mut output = vec![];
+    let result = encoder.into_vec(&mut output).encode_all(&[0]);
+
+    assert!(matches!(result.status, Ok(weezl::LzwStatus::Ok)));
+    assert_eq!(result.consumed_in, 1);
+    assert_eq!(output, &[0x32]);
 }
