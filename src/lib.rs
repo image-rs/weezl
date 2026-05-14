@@ -55,6 +55,7 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #![forbid(unsafe_code)]
 #![forbid(missing_docs)]
+#![allow(clippy::collapsible_if)]
 
 #[cfg(all(feature = "alloc", not(feature = "std")))]
 extern crate alloc;

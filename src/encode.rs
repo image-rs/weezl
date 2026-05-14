@@ -152,8 +152,9 @@ struct Tree {
     keys: Vec<CompressedKey>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 enum FullKey {
+    #[default]
     NoSuccessor,
     Simple(u16),
     Full(u16),
@@ -430,8 +431,8 @@ impl<'d, W: Write> IntoStream<'d, W> {
         let write_bytes = &mut bytes_written;
 
         let outbuf: &mut [u8] =
-            match { buffer.get_or_insert_with(|| StreamBuf::Owned(vec![0u8; *default_size])) } {
-                StreamBuf::Borrowed(slice) => &mut *slice,
+            match buffer.get_or_insert_with(|| StreamBuf::Owned(vec![0u8; *default_size])) {
+                StreamBuf::Borrowed(slice) => slice,
                 StreamBuf::Owned(vec) => &mut *vec,
             };
         assert!(!outbuf.is_empty());
@@ -790,7 +791,7 @@ impl Buffer for MsbBuffer {
     fn flush_out(&mut self, out: &mut &mut [u8]) -> bool {
         let want = usize::from(self.bits_in_buffer / 8);
         let count = want.min((*out).len());
-        let (bytes, tail) = core::mem::replace(out, &mut []).split_at_mut(count);
+        let (bytes, tail) = core::mem::take(out).split_at_mut(count);
         *out = tail;
 
         for b in bytes {
@@ -855,7 +856,7 @@ impl Buffer for LsbBuffer {
     fn flush_out(&mut self, out: &mut &mut [u8]) -> bool {
         let want = usize::from(self.bits_in_buffer / 8);
         let count = want.min((*out).len());
-        let (bytes, tail) = core::mem::replace(out, &mut []).split_at_mut(count);
+        let (bytes, tail) = core::mem::take(out).split_at_mut(count);
         *out = tail;
 
         for b in bytes {
@@ -913,6 +914,7 @@ impl Tree {
         self.keys[1 << min_size] = FullKey::Full(0).into();
     }
 
+    #[allow(clippy::needless_range_loop)]
     fn at_key(&self, code: Code, ch: u8) -> Option<Code> {
         let key = self.keys[usize::from(code)];
         match FullKey::from(key) {
@@ -995,7 +997,7 @@ impl Tree {
                 let new_key = FullKey::Full(self.complex.len() as u16);
                 let simples = &self.simples[usize::from(idx)];
                 self.complex.push(Full {
-                    char_continuation: [Code::max_value(); 256],
+                    char_continuation: [Code::MAX; 256],
                 });
                 let full = self.complex.last_mut().unwrap();
                 for (&pch, &pcont) in simples.chars.iter().zip(simples.codes.iter()) {
@@ -1010,12 +1012,6 @@ impl Tree {
         }
         self.keys.push(FullKey::NoSuccessor.into());
         next
-    }
-}
-
-impl Default for FullKey {
-    fn default() -> Self {
-        FullKey::NoSuccessor
     }
 }
 
