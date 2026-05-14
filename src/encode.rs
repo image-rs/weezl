@@ -601,18 +601,27 @@ impl<B: Buffer> EncodeState<B> {
             clear_code,
             buffer: B::new(min_size),
         };
-        // At min_size 0 or 1 the alphabet plus clear/end codes already
-        // exhaust (or exceed) the starting max_code, so the initial clear
-        // must be emitted at a bumped code size. A single bump is always
-        // sufficient (see bump_if_lowbit in decode.rs for the proof).
-        // Normal-size (>= 2) streams fall straight through.
-        if state.tree.keys.len() > usize::from(state.buffer.max_code())
-            && state.buffer.code_size() < MAX_CODESIZE
-        {
-            state.buffer.bump_code_size();
-        }
+
+        state.bump_initial_code_size();
         state.buffer_code(clear_code);
         state
+    }
+
+    /// Initialize rather odd stream sizes.
+    fn bump_initial_code_size(&mut self) {
+        // At min_size 0 the alphabet plus clear/end codes already exhaust (or exceed) the starting
+        // max_code, so the initial clear must be emitted at a bumped code size. At min_size 1 the
+        // special symbols can be coded but the next-code could not, however see `decode.rs` and
+        // `regression_gif` for a specimen that in non-TIFF logic this is expected.
+        //
+        // A single bump is always sufficient (see bump_if_lowbit in decode.rs for the proof).
+        //
+        // Normal-size (>= 2) streams fall straight through.
+        if self.clear_code >= self.buffer.max_code() - Code::from(self.is_tiff)
+            && self.buffer.code_size() < MAX_CODESIZE
+        {
+            self.buffer.bump_code_size();
+        }
     }
 }
 

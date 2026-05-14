@@ -668,45 +668,75 @@ mod impl_decode_into_async;
 
 impl<C: CodeBuffer, CgC: CodegenConstants> DecodeState<C, CgC> {
     fn new(min_size: u8) -> Self {
-        let mut code_buffer = C::new(min_size);
-        let next_code: u16 = (1 << min_size) + 2;
-        // At min_size 0 or 1 the clear+end codes already fill max_code,
-        // so bump code_size once so the first code can be read. No-op
-        // for min_size >= 2.
-        if next_code > code_buffer.max_code() && code_buffer.code_size() < MAX_CODESIZE {
-            code_buffer.bump_code_size();
-        }
-        DecodeState {
+        let mut pre_state = DecodeState {
             min_size,
             table: Table::new(),
             buffer: Buffer::new(),
             last: None,
             clear_code: 1 << min_size,
             end_code: (1 << min_size) + 1,
-            next_code,
+            next_code: (1 << min_size) + 2,
             has_ended: false,
             is_tiff: false,
             implicit_reset: true,
-            code_buffer,
+            code_buffer: C::new(min_size),
             constants: core::marker::PhantomData,
-        }
+        };
+
+        pre_state.bump_initial_code_size();
+        pre_state
     }
 
     fn init_tables(&mut self) {
         self.code_buffer.reset(self.min_size);
         self.next_code = (1 << self.min_size) + 2;
         self.table.init(self.min_size);
-        if self.next_code > self.code_buffer.max_code()
-            && self.code_buffer.code_size() < MAX_CODESIZE
-        {
-            self.code_buffer.bump_code_size();
-        }
+        self.bump_initial_code_size();
     }
 
     fn reset_tables(&mut self) {
         self.code_buffer.reset(self.min_size);
         self.next_code = (1 << self.min_size) + 2;
         self.table.clear(self.min_size);
+        self.bump_initial_code_size();
+    }
+
+    /// Bump the code size before any symbol is read.
+    fn bump_initial_code_size(&mut self) {
+        // For 0-bit codes:
+        //
+        // 0 - 0b
+        // 1 - clear
+        // 2 - end
+        // (3) - next
+        //
+        // Here it is clear that end could not be coded without bumping the size.
+        //
+        // For 1-bit codes:
+        //
+        // 0 - 0b0
+        // 1 - 0b1
+        // 2 - clear
+        // 3 - end
+        // (4) - next
+        //
+        // Note that the `next` is entirely fictional and not valid as the first code in any case.
+        // We have, in particular, a sample for GIF for 1-bit codes that requires the first symbol
+        // to be read with a 2-bit word size as the bit stream is `0b110010`, i.e. there is an
+        // end code immediately after a clear code and both must be interpreted accordingly.
+        //
+        // However for TIFF the size switch is always one earlier, so compensate even though
+        // realistically you should not use this combination: tiff mandates 8 bits.
+        if self.end_code > self.code_buffer.max_code() - Code::from(self.is_tiff)
+            && self.code_buffer.code_size() < MAX_CODESIZE
+        {
+            self.code_buffer.bump_code_size();
+        }
+    }
+
+    /// Bump the code size after the first coded symbol is read, ensure the `next_code` can be coded
+    /// in all cases.
+    fn bump_post_initial_code_size(&mut self) {
         if self.next_code > self.code_buffer.max_code()
             && self.code_buffer.code_size() < MAX_CODESIZE
         {
@@ -830,6 +860,7 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                                 // Reconstruct the first code in the buffer if this wasn't supposed
                                 // to be treated as a fatal error.
                                 self.buffer.fill_reconstruct(&self.table, init_code);
+                                self.bump_post_initial_code_size();
                                 code_link = Some(DerivationBase {
                                     code: init_code,
                                     first: self.table.first_of(init_code),
