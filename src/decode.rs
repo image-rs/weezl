@@ -89,8 +89,11 @@ trait Stateful {
 /// nice if the index is in a separate register as a result of this AND-masking anyways: we can use
 /// bitshifts extracting the other two fields with the same input.
 #[derive(Clone, Copy, Default)]
-#[repr(transparent)]
-struct Link(u32);
+#[repr(packed)]
+struct Link {
+    prev: u16,
+    first: u8,
+}
 
 #[derive(Clone)]
 struct DerivationBase {
@@ -143,6 +146,17 @@ trait CodegenConstants {
     const YIELD_ON_FULL: bool;
 }
 
+pub(crate) struct NoYield;
+pub(crate) struct YieldOnFull;
+
+impl CodegenConstants for NoYield {
+    const YIELD_ON_FULL: bool = false;
+}
+
+impl CodegenConstants for YieldOnFull {
+    const YIELD_ON_FULL: bool = true;
+}
+
 struct DecodeState<CodeBuffer, Constants: CodegenConstants> {
     /// The original minimum code size.
     min_size: u8,
@@ -189,8 +203,11 @@ struct Buffer {
 /// values wrap to a valid index instead of panicking.
 const MASK: usize = MAX_ENTRIES - 1;
 
+const STREAMING_Q: usize = 8;
+
 struct Table {
-    inner: Box<[Link; MAX_ENTRIES]>,
+    suffixes: Box<[[u8; STREAMING_Q]; MAX_ENTRIES]>,
+    chain: Box<[Link; MAX_ENTRIES]>,
     depths: Box<[u16; MAX_ENTRIES]>,
     len: usize,
 }
@@ -282,44 +299,26 @@ impl Decoder {
     }
 
     fn from_configuration(configuration: &Configuration) -> Box<dyn Stateful + Send + 'static> {
-        struct NoYield;
-        struct YieldOnFull;
-
-        impl CodegenConstants for NoYield {
-            const YIELD_ON_FULL: bool = false;
+        macro_rules! make_state {
+            ($buf:ty, $cgc:ty) => {{
+                let mut state = Box::new(DecodeState::<$buf, $cgc>::new(configuration.size));
+                state.is_tiff = configuration.tiff;
+                state as Box<dyn Stateful + Send + 'static>
+            }};
         }
 
-        impl CodegenConstants for YieldOnFull {
-            const YIELD_ON_FULL: bool = true;
-        }
-
-        type Boxed = Box<dyn Stateful + Send + 'static>;
         match (configuration.order, configuration.yield_on_full) {
             (BitOrder::Lsb, false) => {
-                let mut state =
-                    Box::new(DecodeState::<LsbBuffer, NoYield>::new(configuration.size));
-                state.is_tiff = configuration.tiff;
-                state as Boxed
+                make_state!(LsbBuffer, NoYield)
             }
             (BitOrder::Lsb, true) => {
-                let mut state = Box::new(DecodeState::<LsbBuffer, YieldOnFull>::new(
-                    configuration.size,
-                ));
-                state.is_tiff = configuration.tiff;
-                state as Boxed
+                make_state!(LsbBuffer, YieldOnFull)
             }
             (BitOrder::Msb, false) => {
-                let mut state =
-                    Box::new(DecodeState::<MsbBuffer, NoYield>::new(configuration.size));
-                state.is_tiff = configuration.tiff;
-                state as Boxed
+                make_state!(MsbBuffer, NoYield)
             }
             (BitOrder::Msb, true) => {
-                let mut state = Box::new(DecodeState::<MsbBuffer, YieldOnFull>::new(
-                    configuration.size,
-                ));
-                state.is_tiff = configuration.tiff;
-                state as Boxed
+                make_state!(MsbBuffer, YieldOnFull)
             }
         }
     }
@@ -819,28 +818,23 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                         } else if init_code == self.end_code {
                             self.has_ended = true;
                             status = Ok(LzwStatus::Done);
-                        } else if self.table.is_empty() {
-                            if self.implicit_reset {
+                        } else {
+                            // Any non-clear or end code.
+                            if self.table.is_empty() && self.implicit_reset {
                                 self.init_tables();
-
-                                self.buffer.fill_reconstruct(&self.table, init_code);
-                                let link = self.table.at(init_code).clone();
-                                code_link = Some(DerivationBase {
-                                    code: init_code,
-                                    first: link.first(),
-                                });
-                            } else {
-                                // We require an explicit reset.
+                            } else if self.table.is_empty() {
                                 status = Err(LzwError::InvalidCode);
                             }
-                        } else {
-                            // Reconstruct the first code in the buffer.
-                            self.buffer.fill_reconstruct(&self.table, init_code);
-                            let link = self.table.at(init_code).clone();
-                            code_link = Some(DerivationBase {
-                                code: init_code,
-                                first: link.first(),
-                            });
+
+                            if !self.table.is_empty() {
+                                // Reconstruct the first code in the buffer if this wasn't supposed
+                                // to be treated as a fatal error.
+                                self.buffer.fill_reconstruct(&self.table, init_code);
+                                code_link = Some(DerivationBase {
+                                    code: init_code,
+                                    first: self.table.first_of(init_code),
+                                });
+                            }
                         }
                     }
                 }
@@ -852,22 +846,23 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
         // Track an empty `burst` (see below) means we made no progress.
         let mut have_yet_to_decode_data = false;
 
-        // Restore the previous state, if any.
+        // Drain the internal buffer. Data lands there when a decoded code was longer than the
+        // caller's output buffer, or from the first code after a clear code that interrupted
+        // mid-stream. Either way we have set up `code_link`.
         if code_link.is_some() {
             let remain = self.buffer.buffer();
-            // Check if we can fully finish the buffer.
             if remain.len() > out.len() {
                 if out.is_empty() {
-                    // This also implies the buffer is _not_ empty and we will not enter any
-                    // decoding loop.
                     status = Ok(LzwStatus::NoProgress);
+                    // Truly nothing — no buffer data, no output space.
+                    have_yet_to_decode_data = remain.is_empty();
+                    // Buffer has data but caller gave empty output.
                 } else {
                     out.copy_from_slice(&remain[..out.len()]);
                     self.buffer.consume(out.len());
                     out = &mut [];
                 }
             } else if remain.is_empty() {
-                status = Ok(LzwStatus::NoProgress);
                 have_yet_to_decode_data = true;
             } else {
                 let consumed = remain.len();
@@ -902,9 +897,7 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
             // wasn't smart enough to fully optimize out the init code so that appears outside the
             // loop.
             let mut burst = [0; BURST];
-            let mut burst_byte_len = [0u16; BURST];
             let mut burst_byte = [0u8; BURST];
-            let mut target: [&mut [u8]; BURST] = Default::default();
 
             loop {
                 // In particular, we *also* break if the output buffer is still empty. Especially
@@ -963,19 +956,26 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                 // of an arbitrary count of non-resetting symbols.
                 let left_before_size_switch = size_switch_at.wrapping_sub(self.next_code);
 
+                // Hoist loop-invariant fields into locals so the compiler doesn't reload
+                // from memory on every iteration of the hot burst loop.
+                let clear_code = self.clear_code;
+                let next_code = self.next_code;
+
+                let mut last_decoded_bytes = None;
+
                 // A burst is a sequence of decodes that are completely independent of each other. This
                 // is the case if neither is an end code, a clear code, or a next code, i.e. we have
                 // all of them in the decoding table and thus known their depths, and additionally if
                 // we can decode them directly into the output buffer.
-                for b in &burst[..cnt] {
-                    // We can commit the previous burst code, and will take a slice from the output
-                    // buffer. This also avoids the bounds check in the tight loop later.
-                    if burst_size > 0 {
-                        let len = burst_byte_len[burst_size - 1];
-                        let (into, tail) = out.split_at_mut(usize::from(len));
-                        target[burst_size - 1] = into;
-                        out = tail;
-                    }
+                let codes = &burst[..cnt];
+                let mut code_iter = codes.iter();
+                let mut broken_burst = true;
+
+                loop {
+                    let Some(&read_code) = code_iter.next() else {
+                        broken_burst = false;
+                        break;
+                    };
 
                     // Check that we don't overflow the code size with all codes we burst decode.
                     burst_size += 1;
@@ -984,18 +984,15 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                         break;
                     }
 
-                    let read_code = *b;
-
-                    // A burst code can't be special.
-                    if read_code == self.clear_code
-                        || read_code == self.end_code
-                        || read_code >= self.next_code
-                    {
+                    // A burst code can't be special. Fused check: since
+                    // end_code = clear_code + 1, `read_code - clear_code < 2`
+                    // catches both. Then one more compare for >= next_code.
+                    if read_code.wrapping_sub(clear_code) < 2 || read_code >= next_code {
                         break;
                     }
 
                     // Read the code length and check that we can decode directly into the out slice.
-                    let len = self.table.depths[usize::from(read_code) & MASK];
+                    let len = self.table.code_len(read_code);
 
                     if out.len() < usize::from(len) {
                         break;
@@ -1010,33 +1007,74 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                         }
                     }
 
-                    burst_byte_len[burst_size - 1] = len;
+                    if read_code < clear_code {
+                        let target = out.split_off_first_mut().unwrap();
+                        burst_byte[burst_size - 1] = read_code as u8;
+                        *target = burst_byte[burst_size - 1];
+                        debug_assert_eq!(1, self.table.depths[read_code as usize]);
+                        last_decoded_bytes = Some(core::slice::from_mut(target));
+                    } else {
+                        debug_assert_eq!(len, self.table.depths[read_code as usize]);
+                        // If permissible, we do limited *overwrite* into the output buffer to save
+                        // a lot of instructions that would be spent on computing exact copy
+                        // lengths. That is instead of writing 2 individual bytes for a length 2
+                        // code we use unaligned 64-bit stores regardless of code depth. This
+                        // requires us to have more buffer space than required but that is almost
+                        // always the case until we get to the end.
+                        //
+                        // The overwrite may clobber up to 7 bytes past the code length. Those
+                        // bytes must be within the output buffer and must be overwritten by
+                        // subsequent codes before the caller reads them. With yield_on_full or
+                        // small buffers, the decoder may return before that happens. Require at
+                        // least 8 bytes of slack past the code length to ensure the clobbered
+                        // bytes stay in uncommitted territory.
+                        let chunk_len = len.div_ceil(8);
+                        let slack = out.len() - usize::from(len);
+                        let chunked = out.as_chunks_mut::<8>().0;
+
+                        let target;
+                        if chunked.len() >= usize::from(chunk_len) && slack >= 8 {
+                            let relaxed = &mut chunked[..usize::from(chunk_len)];
+                            burst_byte[burst_size - 1] =
+                                self.table.reconstruct_simple(read_code, relaxed);
+                            target = out.split_off_mut(..usize::from(len)).unwrap();
+                        } else {
+                            target = out.split_off_mut(..usize::from(len)).unwrap();
+                            burst_byte[burst_size - 1] = self.table.reconstruct(read_code, target);
+                        }
+
+                        last_decoded_bytes = Some(target);
+                    }
                 }
 
                 self.code_buffer.consume_bits(burst_size as u8);
+                debug_assert!(burst_size > 0);
                 have_yet_to_decode_data = false;
 
-                // Note that the very last code in the burst buffer doesn't actually belong to the
-                // burst itself. TODO: sometimes it could, we just don't differentiate between the
-                // breaks and a loop end condition above. That may be a speed advantage?
+                if !broken_burst {
+                    if !self.table.is_full() {
+                        self.next_code += cnt as u16;
+                        self.table.derive_burst(&mut deriv, codes, &burst_byte[..]);
+                    }
+
+                    debug_assert!(self.table.is_full() || self.next_code <= size_switch_at);
+                    code_link = Some(DerivationBase {
+                        code: burst[cnt - 1],
+                        first: burst_byte[cnt - 1],
+                    });
+
+                    last_decoded = last_decoded_bytes.map(|x| &*x);
+                    continue;
+                }
+
+                // A code after which we potentially have to handle a size switch, or an
+                // end-of-buffer, or an special/invalid code.
                 let (&new_code, burst) = burst[..burst_size].split_last().unwrap();
 
-                // The very tight loop for restoring the actual burst. These can be reconstructed in
-                // parallel since none of them depend on a prior constructed. Only the derivation of
-                // new codes is not parallel. There are no size changes here either.
-                let burst_targets = &mut target[..burst_size - 1];
-
                 if !self.table.is_full() {
-                    self.next_code += burst_targets.len() as u16;
+                    self.next_code += burst_size as u16 - 1;
+                    self.table.derive_burst(&mut deriv, &burst, &burst_byte[..]);
                 }
-
-                for ((&burst, target), byte) in
-                    burst.iter().zip(&mut *burst_targets).zip(&mut burst_byte)
-                {
-                    *byte = self.table.reconstruct(burst, target);
-                }
-
-                self.table.derive_burst(&mut deriv, burst, &burst_byte[..]);
 
                 // Now handle the special codes.
                 if new_code == self.clear_code {
@@ -1059,23 +1097,22 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                     break;
                 }
 
-                let required_len = if new_code == self.next_code {
-                    self.table.depths[usize::from(deriv.code) & MASK] + 1
-                } else {
-                    self.table.depths[usize::from(new_code) & MASK]
-                };
-
                 // We need the decoded data of the new code if it is the `next_code`. This is the
                 // special case of LZW decoding that is demonstrated by `banana` (or form cScSc). In
                 // all other cases we only need the first character of the decoded data.
                 let have_next_code = new_code == self.next_code;
 
+                let required_len = if have_next_code {
+                    self.table.code_len(deriv.code) + 1
+                } else {
+                    self.table.code_len(new_code)
+                };
+
                 // Update the slice holding the last decoded word.
                 if have_next_code {
-                    // If we did not have any burst code, we still hold that slice in the buffer.
-                    if let Some(new_last) = target[..burst_size - 1].last_mut() {
-                        let slice = core::mem::replace(new_last, &mut []);
-                        last_decoded = Some(&*slice);
+                    if last_decoded_bytes.is_some() {
+                        // If we did not have any burst code, we still hold that slice in the buffer.
+                        last_decoded = last_decoded_bytes.map(|x| &*x);
                     }
                 }
 
@@ -1431,14 +1468,10 @@ impl Buffer {
     fn fill_reconstruct(&mut self, table: &Table, code: Code) -> u8 {
         self.write_mark = 0;
         self.read_mark = 0;
-        let depth = table.depths[usize::from(code) & MASK];
-        let mut memory = core::mem::replace(&mut self.bytes, Box::default());
-
-        let out = &mut memory[..usize::from(depth)];
-        self.reconstructed_another_code = true;
+        let depth = table.code_len(code);
+        let out = &mut self.bytes[..usize::from(depth)];
         let last = table.reconstruct(code, out);
-
-        self.bytes = memory;
+        self.reconstructed_another_code = true;
         self.write_mark = usize::from(depth);
         last
     }
@@ -1452,19 +1485,11 @@ impl Buffer {
     }
 }
 
-fn boxed_arr<T: Clone + Default, const N: usize>() -> Box<[T; N]> {
-    use core::convert::TryInto;
-    vec![T::default(); N]
-        .into_boxed_slice()
-        .try_into()
-        .ok()
-        .unwrap()
-}
-
 impl Table {
     fn new() -> Self {
         Table {
-            inner: boxed_arr(),
+            suffixes: boxed_arr(),
+            chain: boxed_arr(),
             depths: boxed_arr(),
             len: 0,
         }
@@ -1478,7 +1503,8 @@ impl Table {
         self.len = 0;
         for i in 0..(1u16 << u16::from(min_size)) {
             let idx = self.len & MASK;
-            self.inner[idx] = Link::base(i as u8);
+            self.suffixes[idx] = [i as u8, 0, 0, 0, 0, 0, 0, 0];
+            self.chain[idx] = Link::base(i as u8);
             self.depths[idx] = 1;
             self.len += 1;
         }
@@ -1488,15 +1514,19 @@ impl Table {
         for _ in 0..2 {
             if self.len < MAX_ENTRIES {
                 let idx = self.len & MASK;
-                self.inner[idx] = Link::base(0);
+                self.chain[idx] = Link::base(0);
                 self.depths[idx] = 0;
             }
             self.len += 1;
         }
     }
 
-    fn at(&self, code: Code) -> &Link {
-        &self.inner[usize::from(code) & MASK]
+    fn first_of(&self, code: Code) -> u8 {
+        self.chain[usize::from(code) & MASK].first
+    }
+
+    fn code_len(&self, code: Code) -> u16 {
+        self.depths[usize::from(code) & MASK]
     }
 
     fn is_empty(&self) -> bool {
@@ -1509,9 +1539,23 @@ impl Table {
 
     fn derive(&mut self, from: &DerivationBase, byte: u8) {
         let idx = self.len & MASK;
-        let depth = self.depths[usize::from(from.code) & MASK] + 1;
-        self.inner[idx] = from.derive(byte);
-        self.depths[idx] = depth;
+
+        let parent = usize::from(from.code) & MASK;
+        let parent_depth = self.depths[parent];
+        let pos = parent_depth as usize & (STREAMING_Q - 1);
+        let mut link = from.derive();
+
+        if pos > 0 {
+            self.suffixes[idx] = self.suffixes[parent];
+            self.suffixes[idx][pos] = byte;
+            link.prev = self.chain[parent].prev;
+        } else {
+            self.suffixes[idx] = [0u8; STREAMING_Q];
+            self.suffixes[idx][0] = byte;
+        }
+
+        self.depths[idx] = parent_depth + 1;
+        self.chain[idx] = link;
         self.len += 1;
     }
 
@@ -1524,49 +1568,115 @@ impl Table {
     }
 
     fn reconstruct(&self, code: Code, out: &mut [u8]) -> u8 {
-        // Invariant: this only has those bits of `MASK`, i.e. `< MAX_CODE`;
-        let mut code_iter = usize::from(code) & MASK;
-        let first = self.inner[code_iter].first();
+        let o = out.len();
+        let code_index = usize::from(code) & MASK;
+        let suffix = self.suffixes[code_index];
 
-        // Masked access ensures any prev value (even from corrupt data) maps to a valid array
-        // index. This replaces a previous `min(len, prev)` clamp with equivalent safety: no panic,
-        // bounded loop, wrong output on corrupt data, but optimizes better.
-        for ch in out.iter_mut().rev() {
-            let entry = &self.inner[code_iter];
-            code_iter = entry.prev_idx();
-            *ch = entry.byte();
+        // Short path: whole value fits in one Q-chunk.
+        if o <= STREAMING_Q {
+            Self::non_memcpy(out, suffix);
+            return self.chain[code_index].first;
+        }
+
+        // Tail: last incomplete chunk. Note: this is not the same as as_chunks_mut's tail since we
+        // have a full chunk when this the cdde depth is aligned.
+        let tail_len = ((o - 1) & (STREAMING_Q - 1)) + 1;
+        let tail_start = o - tail_len;
+        Self::non_memcpy(&mut out[tail_start..], suffix);
+
+        let first = self.chain[code_index].first;
+        let mut c = self.chain[code_index].previous_code();
+        // Full 8-byte chunks, walking the prefix chain backward.
+        // chunks_exact_mut guarantees each chunk has exactly STREAMING_Q bytes,
+        // so LLVM compiles copy_from_slice to a single qword move with no
+        // bounds check. The `.rev()` walks from end to start.
+        for chunk in out[..tail_start].chunks_exact_mut(STREAMING_Q).rev() {
+            let code_index = usize::from(c) & MASK;
+            chunk.copy_from_slice(&self.suffixes[code_index]);
+            c = self.chain[code_index].previous_code();
         }
 
         first
     }
+
+    fn reconstruct_simple(&self, code: Code, out: &mut [[u8; 8]]) -> u8 {
+        let code_index = usize::from(code) & MASK;
+        let suffix = self.suffixes[code_index];
+
+        let Some((last, prefix)) = out.split_last_mut() else {
+            return 0;
+        };
+
+        // Short path: whole value fits in one Q-chunk.
+        *last = suffix;
+
+        if prefix.is_empty() {
+            return self.chain[code_index].first;
+        }
+
+        // Tail: last incomplete chunk. Note: this is not the same as as_chunks_mut's tail since we
+        // have a full chunk when this the cdde depth is aligned.
+        let first = self.chain[code_index].first;
+        let mut c = self.chain[code_index].previous_code();
+        // Full 8-byte chunks, walking the prefix chain backward.
+        // chunks_exact_mut guarantees each chunk has exactly STREAMING_Q bytes,
+        // so LLVM compiles copy_from_slice to a single qword move with no
+        // bounds check. The `.rev()` walks from end to start.
+        for chunk in prefix.iter_mut().rev() {
+            let code_index = usize::from(c) & MASK;
+            *chunk = self.suffixes[code_index];
+            c = self.chain[code_index].previous_code();
+        }
+
+        first
+    }
+
+    fn non_memcpy(out: &mut [u8], from: [u8; STREAMING_Q]) {
+        match out.len() {
+            0 => {}
+            1 => out[0] = from[0],
+            2 => out[..2].copy_from_slice(&from[..2]),
+            3 => out[..3].copy_from_slice(&from[..3]),
+            4 => out[..4].copy_from_slice(&from[..4]),
+            5 => out[..5].copy_from_slice(&from[..5]),
+            6 => out[..6].copy_from_slice(&from[..6]),
+            7 => out[..7].copy_from_slice(&from[..7]),
+            8 => out[..8].copy_from_slice(&from[..8]),
+            _ => unreachable!(),
+        }
+    }
+}
+
+fn boxed_arr<T: Clone + Default, const N: usize>() -> Box<[T; N]> {
+    use core::convert::TryInto;
+    vec![T::default(); N]
+        .into_boxed_slice()
+        .try_into()
+        .ok()
+        .unwrap()
 }
 
 impl Link {
-    const fn base(byte: u8) -> Self {
-        let n = byte as u32;
-        Link(n << 24 | n << 16)
+    fn previous_code(&self) -> u16 {
+        self.prev
     }
 
-    /// Extract the code of the previous link as an index. Masks the value to avoid bounds checks
-    /// if you use it against a sufficiently sized array.
-    fn prev_idx(self) -> usize {
-        self.0 as usize & MASK
-    }
-
-    fn byte(self) -> u8 {
-        (self.0 >> 16) as u8
-    }
-
-    fn first(self) -> u8 {
-        (self.0 >> 24) as u8
+    fn base(byte: u8) -> Self {
+        Link {
+            prev: 0u16,
+            first: byte,
+        }
     }
 }
 
 impl DerivationBase {
-    fn derive(&self, byte: u8) -> Link {
-        let byte = u32::from(byte) << 16;
-        let first = u32::from(self.first) << 24;
-        Link(first | byte | u32::from(self.code))
+    // TODO: this has self type to make it clear we might depend on the old in a future
+    // optimization. However, that has no practical purpose right now.
+    fn derive(&self) -> Link {
+        Link {
+            prev: self.code,
+            first: self.first,
+        }
     }
 }
 
@@ -1668,5 +1778,45 @@ mod tests {
                 reference = Some(output);
             }
         }
+    }
+
+    #[test]
+    fn table_derive() {
+        let mut table = super::Table::new();
+        table.init(8);
+
+        let mut base = super::DerivationBase {
+            code: 1,
+            first: 0x1,
+        };
+
+        for i in 0..16 {
+            table.derive(&base, i);
+            base.code = (table.len - 1) as u16;
+        }
+
+        let last = (table.len - 1) as u16;
+        assert_eq!(table.first_of(last), 1);
+        assert_eq!(table.code_len(last), 17);
+        assert_eq!(table.suffixes[last as usize], [15, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(table.chain[last as usize].previous_code(), last - 1);
+        assert_eq!(
+            table.suffixes[last as usize - 1],
+            [7, 8, 9, 10, 11, 12, 13, 14]
+        );
+        assert_eq!(table.chain[last as usize - 1].previous_code(), last - 9);
+        assert_eq!(table.suffixes[last as usize - 9], [1, 0, 1, 2, 3, 4, 5, 6]);
+        assert_eq!(table.chain[last as usize - 9].previous_code(), 0);
+
+        let mut out = [0; 17];
+        table.reconstruct(last, &mut out);
+        assert_eq!(out[..8], [1, 0, 1, 2, 3, 4, 5, 6]);
+        assert_eq!(out[8..16], [7, 8, 9, 10, 11, 12, 13, 14]);
+        assert_eq!(out[16..], [15]);
+
+        out.fill(0x42);
+        table.reconstruct(last - 1, &mut out[..16]);
+        assert_eq!(out[..8], [1, 0, 1, 2, 3, 4, 5, 6]);
+        assert_eq!(out[8..16], [7, 8, 9, 10, 11, 12, 13, 14]);
     }
 }

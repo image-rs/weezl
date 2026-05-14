@@ -126,6 +126,26 @@ mod tests {
     #[cfg(feature = "std")]
     use crate::{decode, encode};
 
+    /// Regression: at min_code_size=12, clear/end code indices (4096/4097)
+    /// must not wrap via `& MASK` and overwrite alphabet entries 0/1.
+    #[test]
+    fn roundtrip_min_code_size_12() {
+        use crate::BitOrder;
+        for &order in &[BitOrder::Lsb, BitOrder::Msb] {
+            for byte in 0..=255u8 {
+                let encoded = Encoder::new(order, 12).encode(&[byte]).unwrap();
+                let decoded = Decoder::new(order, 12).decode(&encoded).unwrap();
+                assert_eq!(
+                    decoded,
+                    crate::alloc::vec![byte],
+                    "{:?} size=12 byte={}",
+                    order,
+                    byte
+                );
+            }
+        }
+    }
+
     #[test]
     fn stable_send() {
         fn must_be_send<T: Send + 'static>() {}
