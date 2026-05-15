@@ -197,11 +197,7 @@ struct Buffer {
     pub(crate) reconstructed_another_code: bool,
 }
 
-/// Mask for indexing into fixed-size arrays. Since MAX_ENTRIES = 4096 = 2^12,
-/// `idx & MASK` is guaranteed < MAX_ENTRIES. LLVM can prove this for
-/// `[T; MAX_ENTRIES]` arrays, eliminating bounds checks. Corrupt `prev`
-/// values wrap to a valid index instead of panicking.
-const MASK: usize = MAX_ENTRIES - 1;
+const SMALL_ENTRIES: usize = 512;
 
 const STREAMING_Q: usize = 8;
 
@@ -670,7 +666,11 @@ impl<C: CodeBuffer, CgC: CodegenConstants> DecodeState<C, CgC> {
     fn new(min_size: u8) -> Self {
         let mut pre_state = DecodeState {
             min_size,
-            table: DynamicTable::Full(Table::new()),
+            table: if min_size > 9 {
+                DynamicTable::Full(Table::new())
+            } else {
+                DynamicTable::Small(Table::new())
+            },
             buffer: Buffer::new(),
             last: None,
             clear_code: 1 << min_size,
@@ -749,6 +749,20 @@ impl<C: CodeBuffer, CgC: CodegenConstants> DecodeState<C, CgC> {
             self.code_buffer.bump_code_size();
         }
     }
+
+    fn transition_to_full(&mut self) {
+        let DynamicTable::Small(small) = &mut self.table else {
+            return;
+        };
+
+        let mut big = Table::<MAX_ENTRIES>::new();
+        big.suffixes[..SMALL_ENTRIES].copy_from_slice(&*small.suffixes);
+        big.depths[..SMALL_ENTRIES].copy_from_slice(&*small.depths);
+        big.chain[..SMALL_ENTRIES].copy_from_slice(&*small.chain);
+        big.len = small.len;
+
+        self.table = DynamicTable::Full(big);
+    }
 }
 
 impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
@@ -780,8 +794,8 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
     }
 
     fn advance(&mut self, inp: &[u8], out: &mut [u8]) -> BufferResult {
-        if matches!(self.table, DynamicTable::Small(_)) && self.code_buffer.code_size() >= 8 {
-            todo!()
+        if matches!(self.table, DynamicTable::Small(_)) && self.code_buffer.code_size() > 9 {
+            self.transition_to_full();
         }
 
         if matches!(self.table, DynamicTable::Small(_)) {
@@ -809,42 +823,52 @@ trait TableSizeDispatch {
 }
 
 impl<const N: usize> TableSizeDispatch for Table<N> {
+    #[inline(always)]
     fn is_empty(&self) -> bool {
         Table::is_empty(self)
     }
 
+    #[inline(always)]
     fn len(&self) -> usize {
         self.len
     }
 
+    #[inline(always)]
     fn is_full(&self) -> bool {
         Table::is_full(self)
     }
 
+    #[inline(always)]
     fn code_len(&self, code: Code) -> u16 {
         Table::code_len(self, code)
     }
 
+    #[inline(always)]
     fn depths(&self, code: Code) -> u16 {
         self.depths[code as usize]
     }
 
+    #[inline(always)]
     fn first_of(&self, code: Code) -> u8 {
         Table::first_of(self, code)
     }
 
+    #[inline(always)]
     fn reconstruct_simple(&self, code: Code, out: &mut [[u8; 8]]) -> u8 {
         Table::reconstruct_simple(self, code, out)
     }
 
+    #[inline(always)]
     fn reconstruct(&self, code: Code, out: &mut [u8]) -> u8 {
         Table::reconstruct(self, code, out)
     }
 
+    #[inline(always)]
     fn derive_burst(&mut self, out: &mut DerivationBase, code: &[Code], cha: &[u8]) {
         Table::derive_burst(self, out, code, cha)
     }
 
+    #[inline(always)]
     fn derive(&mut self, link: &DerivationBase, cha: u8) {
         Table::derive(self, link, cha)
     }
@@ -1336,7 +1360,7 @@ impl<C: CodeBuffer, CgC: CodegenConstants> DecodeState<C, CgC> {
                     break;
                 }
 
-                if !HAVE_FULL && self.code_buffer.code_size() >= 8 {
+                if !HAVE_FULL && self.code_buffer.code_size() > 9 {
                     break;
                 }
             }
@@ -1637,7 +1661,7 @@ impl<const N: usize> Table<N> {
     fn init(&mut self, min_size: u8) {
         self.len = 0;
         for i in 0..(1u16 << u16::from(min_size)) {
-            let idx = self.len & MASK;
+            let idx = self.len & (N - 1);
             self.suffixes[idx] = [i as u8, 0, 0, 0, 0, 0, 0, 0];
             self.chain[idx] = Link::base(i as u8);
             self.depths[idx] = 1;
@@ -1648,7 +1672,7 @@ impl<const N: usize> Table<N> {
         // wraps to index 0).
         for _ in 0..2 {
             if self.len < MAX_ENTRIES {
-                let idx = self.len & MASK;
+                let idx = self.len & (N - 1);
                 self.chain[idx] = Link::base(0);
                 self.depths[idx] = 0;
             }
@@ -1657,11 +1681,11 @@ impl<const N: usize> Table<N> {
     }
 
     fn first_of(&self, code: Code) -> u8 {
-        self.chain[usize::from(code) & MASK].first
+        self.chain[usize::from(code) & (N - 1)].first
     }
 
     fn code_len(&self, code: Code) -> u16 {
-        self.depths[usize::from(code) & MASK]
+        self.depths[usize::from(code) & (N - 1)]
     }
 
     fn is_empty(&self) -> bool {
@@ -1669,14 +1693,14 @@ impl<const N: usize> Table<N> {
     }
 
     fn is_full(&self) -> bool {
-        self.len >= MAX_ENTRIES
+        self.len >= N
     }
 
     fn derive(&mut self, from: &DerivationBase, byte: u8) {
-        debug_assert!(self.len < MAX_ENTRIES);
-        let idx = self.len & MASK;
+        debug_assert!(self.len < N);
+        let idx = self.len & (N - 1);
 
-        let parent = usize::from(from.code) & MASK;
+        let parent = usize::from(from.code) & (N - 1);
         let parent_depth = self.depths[parent];
         let pos = parent_depth as usize & (STREAMING_Q - 1);
         let mut link = from.derive();
@@ -1711,7 +1735,7 @@ impl<const N: usize> Table<N> {
 
     fn reconstruct(&self, code: Code, out: &mut [u8]) -> u8 {
         let o = out.len();
-        let code_index = usize::from(code) & MASK;
+        let code_index = usize::from(code) & (N - 1);
         let suffix = self.suffixes[code_index];
 
         // Short path: whole value fits in one Q-chunk.
@@ -1733,7 +1757,7 @@ impl<const N: usize> Table<N> {
         // so LLVM compiles copy_from_slice to a single qword move with no
         // bounds check. The `.rev()` walks from end to start.
         for chunk in out[..tail_start].chunks_exact_mut(STREAMING_Q).rev() {
-            let code_index = usize::from(c) & MASK;
+            let code_index = usize::from(c) & (N - 1);
             chunk.copy_from_slice(&self.suffixes[code_index]);
             c = self.chain[code_index].previous_code();
         }
@@ -1757,7 +1781,7 @@ impl<const N: usize> Table<N> {
     }
 
     fn reconstruct_simple(&self, code: Code, out: &mut [[u8; 8]]) -> u8 {
-        let code_index = usize::from(code) & MASK;
+        let code_index = usize::from(code) & (N - 1);
         let suffix = self.suffixes[code_index];
 
         let Some((last, prefix)) = out.split_last_mut() else {
@@ -1780,7 +1804,7 @@ impl<const N: usize> Table<N> {
         // so LLVM compiles copy_from_slice to a single qword move with no
         // bounds check. The `.rev()` walks from end to start.
         for chunk in prefix.iter_mut().rev() {
-            let code_index = usize::from(c) & MASK;
+            let code_index = usize::from(c) & (N - 1);
             *chunk = self.suffixes[code_index];
             c = self.chain[code_index].previous_code();
         }
@@ -1790,7 +1814,7 @@ impl<const N: usize> Table<N> {
 }
 
 enum DynamicTable {
-    Small(Table<256>),
+    Small(Table<SMALL_ENTRIES>),
     Full(Table<MAX_ENTRIES>),
 }
 
@@ -1809,7 +1833,7 @@ trait AsSizeDispatch<const N: bool> {
 }
 
 impl AsSizeDispatch<false> for DynamicTable {
-    type Table = Table<256>;
+    type Table = Table<SMALL_ENTRIES>;
 
     fn use_as(&mut self) -> &mut Self::Table {
         match self {
