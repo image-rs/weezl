@@ -161,7 +161,7 @@ struct DecodeState<CodeBuffer, Constants: CodegenConstants> {
     /// The original minimum code size.
     min_size: u8,
     /// The table of decoded codes.
-    table: Table,
+    table: Table<MAX_ENTRIES>,
     /// The buffer of decoded data.
     buffer: Buffer,
     /// The link which we are still decoding and its original code.
@@ -205,10 +205,10 @@ const MASK: usize = MAX_ENTRIES - 1;
 
 const STREAMING_Q: usize = 8;
 
-struct Table {
-    suffixes: Box<[[u8; STREAMING_Q]; MAX_ENTRIES]>,
-    chain: Box<[Link; MAX_ENTRIES]>,
-    depths: Box<[u16; MAX_ENTRIES]>,
+struct Table<const ENTRIES: usize> {
+    suffixes: Box<[[u8; STREAMING_Q]; ENTRIES]>,
+    chain: Box<[Link; ENTRIES]>,
+    depths: Box<[u16; ENTRIES]>,
     len: usize,
 }
 
@@ -832,7 +832,7 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
         match self.last.take() {
             // No last state? This is the first code after a reset?
             None => {
-                match self.next_symbol(&mut inp) {
+                match self.code_buffer.next_symbol(&mut inp) {
                     // Plainly invalid code.
                     Some(code) if code > self.next_code => status = Err(LzwError::InvalidCode),
                     // next_code would require an actual predecessor.
@@ -955,7 +955,7 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
 
                 // Ensure the code buffer is full, we're about to request some codes.
                 // Note that this also ensures at least one code is in the buffer if any input is left.
-                self.refill_bits(&mut inp);
+                self.code_buffer.refill_bits(&mut inp);
                 let cnt = self.code_buffer.peek_bits(&mut burst);
 
                 // No code left in the buffer, and no more bytes to refill the buffer.
@@ -1198,7 +1198,7 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                     if self.next_code >= self.code_buffer.max_code() - Code::from(self.is_tiff)
                         && self.code_buffer.code_size() < MAX_CODESIZE
                     {
-                        self.bump_code_size();
+                        self.code_buffer.bump_code_size();
                     }
 
                     self.next_code += 1;
@@ -1252,20 +1252,6 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
             consumed_out: o_out.wrapping_sub(out.len()),
             status,
         }
-    }
-}
-
-impl<C: CodeBuffer, CgC: CodegenConstants> DecodeState<C, CgC> {
-    fn next_symbol(&mut self, inp: &mut &[u8]) -> Option<Code> {
-        self.code_buffer.next_symbol(inp)
-    }
-
-    fn bump_code_size(&mut self) {
-        self.code_buffer.bump_code_size()
-    }
-
-    fn refill_bits(&mut self, inp: &mut &[u8]) {
-        self.code_buffer.refill_bits(inp)
     }
 }
 
@@ -1496,7 +1482,7 @@ impl Buffer {
     }
 
     // Fill the buffer by decoding from the table
-    fn fill_reconstruct(&mut self, table: &Table, code: Code) -> u8 {
+    fn fill_reconstruct(&mut self, table: &Table<MAX_ENTRIES>, code: Code) -> u8 {
         self.write_mark = 0;
         self.read_mark = 0;
         let depth = table.code_len(code);
@@ -1516,7 +1502,7 @@ impl Buffer {
     }
 }
 
-impl Table {
+impl Table<MAX_ENTRIES> {
     fn new() -> Self {
         Table {
             suffixes: boxed_arr(),
