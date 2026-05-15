@@ -1569,6 +1569,7 @@ impl Table {
     }
 
     fn derive(&mut self, from: &DerivationBase, byte: u8) {
+        debug_assert!(self.len < MAX_ENTRIES);
         let idx = self.len & MASK;
 
         let parent = usize::from(from.code) & MASK;
@@ -1591,7 +1592,13 @@ impl Table {
     }
 
     fn derive_burst(&mut self, from: &mut DerivationBase, burst: &[Code], first: &[u8]) {
-        for (&code, &first_byte) in burst.iter().zip(first.iter()) {
+        // A burst is constrained to the number of possible codes before a size switch, however at
+        // the maximum possible size we *never* perform a switch again (until reset) and so the
+        // size of the burst is not constrained. But we must not derive any of those additional
+        // codes which would wrap into the start and overwrite entries for codes 0-5.
+        let max = MAX_ENTRIES - self.len;
+
+        for (&code, &first_byte) in burst.iter().zip(first.iter()).take(max) {
             self.derive(from, first_byte);
             from.code = code;
             from.first = first_byte;
