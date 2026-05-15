@@ -1,3 +1,8 @@
+# Version 0.2.1
+
+- Fix a bug that overwrote some initial entries in streams that do not use
+  clear codes immediately with a full dictionary.
+
 ## Version 0.2.0
 
 - Overhaul of the decoder algorithm, inspired by [Wuffs], to write 8 bytes at
