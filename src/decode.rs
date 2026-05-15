@@ -161,7 +161,7 @@ struct DecodeState<CodeBuffer, Constants: CodegenConstants> {
     /// The original minimum code size.
     min_size: u8,
     /// The table of decoded codes.
-    table: Table<MAX_ENTRIES>,
+    table: DynamicTable,
     /// The buffer of decoded data.
     buffer: Buffer,
     /// The link which we are still decoding and its original code.
@@ -205,7 +205,7 @@ const MASK: usize = MAX_ENTRIES - 1;
 
 const STREAMING_Q: usize = 8;
 
-struct Table<const ENTRIES: usize> {
+struct Table<const ENTRIES: usize = MAX_ENTRIES> {
     suffixes: Box<[[u8; STREAMING_Q]; ENTRIES]>,
     chain: Box<[Link; ENTRIES]>,
     depths: Box<[u16; ENTRIES]>,
@@ -670,7 +670,7 @@ impl<C: CodeBuffer, CgC: CodegenConstants> DecodeState<C, CgC> {
     fn new(min_size: u8) -> Self {
         let mut pre_state = DecodeState {
             min_size,
-            table: Table::new(),
+            table: DynamicTable::Full(Table::new()),
             buffer: Buffer::new(),
             last: None,
             clear_code: 1 << min_size,
@@ -690,14 +690,20 @@ impl<C: CodeBuffer, CgC: CodegenConstants> DecodeState<C, CgC> {
     fn init_tables(&mut self) {
         self.code_buffer.reset(self.min_size);
         self.next_code = (1 << self.min_size) + 2;
-        self.table.init(self.min_size);
+        match &mut self.table {
+            DynamicTable::Small(tbl) => tbl.init(self.min_size),
+            DynamicTable::Full(tbl) => tbl.init(self.min_size),
+        }
         self.bump_initial_code_size();
     }
 
     fn reset_tables(&mut self) {
         self.code_buffer.reset(self.min_size);
         self.next_code = (1 << self.min_size) + 2;
-        self.table.clear(self.min_size);
+        match &mut self.table {
+            DynamicTable::Small(tbl) => tbl.clear(self.min_size),
+            DynamicTable::Full(tbl) => tbl.clear(self.min_size),
+        }
         self.bump_initial_code_size();
     }
 
@@ -755,7 +761,11 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
     }
 
     fn reset(&mut self) {
-        self.table.init(self.min_size);
+        match &mut self.table {
+            DynamicTable::Small(tbl) => tbl.init(self.min_size),
+            DynamicTable::Full(tbl) => tbl.init(self.min_size),
+        }
+
         self.next_code = (1 << self.min_size) + 2;
         self.buffer.read_mark = 0;
         self.buffer.write_mark = 0;
@@ -769,7 +779,86 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
         }
     }
 
-    fn advance(&mut self, mut inp: &[u8], mut out: &mut [u8]) -> BufferResult {
+    fn advance(&mut self, inp: &[u8], out: &mut [u8]) -> BufferResult {
+        if matches!(self.table, DynamicTable::Small(_)) && self.code_buffer.code_size() >= 8 {
+            todo!()
+        }
+
+        if matches!(self.table, DynamicTable::Small(_)) {
+            self.advance_inner::<false>(inp, out)
+        } else {
+            self.advance_inner::<true>(inp, out)
+        }
+    }
+}
+
+trait TableSizeDispatch {
+    fn is_empty(&self) -> bool;
+    fn len(&self) -> usize;
+
+    fn is_full(&self) -> bool;
+    fn code_len(&self, _: Code) -> u16;
+    fn depths(&self, _: Code) -> u16;
+    fn first_of(&self, _: Code) -> u8;
+
+    fn reconstruct_simple(&self, _: Code, _: &mut [[u8; 8]]) -> u8;
+    fn reconstruct(&self, _: Code, _: &mut [u8]) -> u8;
+
+    fn derive_burst(&mut self, _: &mut DerivationBase, _: &[Code], _: &[u8]);
+    fn derive(&mut self, _: &DerivationBase, _: u8);
+}
+
+impl<const N: usize> TableSizeDispatch for Table<N> {
+    fn is_empty(&self) -> bool {
+        Table::is_empty(self)
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn is_full(&self) -> bool {
+        Table::is_full(self)
+    }
+
+    fn code_len(&self, code: Code) -> u16 {
+        Table::code_len(self, code)
+    }
+
+    fn depths(&self, code: Code) -> u16 {
+        self.depths[code as usize]
+    }
+
+    fn first_of(&self, code: Code) -> u8 {
+        Table::first_of(self, code)
+    }
+
+    fn reconstruct_simple(&self, code: Code, out: &mut [[u8; 8]]) -> u8 {
+        Table::reconstruct_simple(self, code, out)
+    }
+
+    fn reconstruct(&self, code: Code, out: &mut [u8]) -> u8 {
+        Table::reconstruct(self, code, out)
+    }
+
+    fn derive_burst(&mut self, out: &mut DerivationBase, code: &[Code], cha: &[u8]) {
+        Table::derive_burst(self, out, code, cha)
+    }
+
+    fn derive(&mut self, link: &DerivationBase, cha: u8) {
+        Table::derive(self, link, cha)
+    }
+}
+
+impl<C: CodeBuffer, CgC: CodegenConstants> DecodeState<C, CgC> {
+    fn advance_inner<const HAVE_FULL: bool>(
+        &mut self,
+        mut inp: &[u8],
+        mut out: &mut [u8],
+    ) -> BufferResult
+    where
+        DynamicTable: AsSizeDispatch<HAVE_FULL>,
+    {
         // Skip everything if there is nothing to do.
         if self.has_ended {
             return BufferResult {
@@ -786,12 +875,12 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
         // decoded first before continuing with the regular decoding. The same buffer is required
         // to persist some symbol state across calls.
         //
-        // We store the words corresponding to code symbols in an index chain, bytewise, where we
-        // push each decoded symbol. (TODO: wuffs shows some success with 8-byte units). This chain
-        // is traversed for each symbol when it is decoded and bytes are placed directly into the
-        // output slice. In the special case (new_code == next_code) we use an existing decoded
-        // version that is present in either the out bytes of this call or in buffer to copy the
-        // repeated prefix slice.
+        // We store the words corresponding to code symbols in an index chain, in 8-byte units,
+        // where we write each decoded symbol. This chain is traversed for each symbol when it is
+        // decoded and bytes are placed directly into the output slice. In the special case
+        // (new_code == next_code) we use an existing decoded version that is present in either the
+        // out bytes of this call or in buffer to copy the repeated prefix slice.
+        //
         // TODO: I played with a 'decoding cache' to remember the position of long symbols and
         // avoid traversing the chain, doing a copy of memory instead. It did however not lead to
         // a serious improvement. It's just unlikely to both have a long symbol and have that
@@ -803,15 +892,17 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
         // branch prediction. Our decoding table already gives us a lookahead on symbol lengths but
         // only for re-used codes, not novel ones. This lookahead also makes the loop termination
         // when restoring each byte of the code word perfectly predictable! So a burst is a chunk
-        // of code words which are all independent of each other, have known lengths _and_ are
-        // guaranteed to fit into the out slice without requiring a buffer. One burst can be
+        // of code words which are all independent of each other, have known lengths, are
+        // guaranteed to fit into the out slice without requiring a buffer. Additionally, since we
+        // write to the output in units of 8 bytes the output must be long enough to overshoot the
+        // real end of the symbol to the next multiple, this avoids having to fall back to byte
+        // copies for most tail (the extras are overwritten with the next symbol). One burst can be
         // decoded in an extremely tight loop.
         //
-        // TODO: since words can be at most (1 << MAX_CODESIZE) = 4096 bytes long we could avoid
-        // that intermediate buffer at the expense of not always filling the output buffer
-        // completely. Alternatively we might follow its chain of precursor states twice. This may
-        // be even cheaper if we store more than one byte per link so it really should be
-        // evaluated.
+        // TODO: since words can be at most (1 << MAX_CODESIZE) = 4096 bytes long we could avoid an
+        // internal buffer at the expense of not always filling the output buffer completely.
+        // Alternatively we might follow its chain of precursor states twice. This may be even
+        // cheaper if we store more than one byte per link so it really should be evaluated.
         // TODO: if the caller was required to provide the previous last word we could also avoid
         // the buffer for cases where we need it to restore the next code! This could be built
         // backwards compatible by only doing it after an opt-in call that enables the behaviour.
@@ -849,22 +940,25 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                             self.has_ended = true;
                             status = Ok(LzwStatus::Done);
                         } else {
+                            let table = self.table.use_as::<HAVE_FULL>();
                             // Any non-clear or end code.
-                            if self.table.is_empty() && self.implicit_reset {
+                            if table.is_empty() && self.implicit_reset {
                                 self.init_tables();
-                            } else if self.table.is_empty() {
+                            } else if table.is_empty() {
                                 status = Err(LzwError::InvalidCode);
                             }
 
-                            if !self.table.is_empty() {
+                            let table = self.table.use_as::<HAVE_FULL>();
+                            if !table.is_empty() {
                                 // Reconstruct the first code in the buffer if this wasn't supposed
                                 // to be treated as a fatal error.
-                                self.buffer.fill_reconstruct(&self.table, init_code);
-                                self.bump_post_initial_code_size();
+                                self.buffer.fill_reconstruct(table, init_code);
                                 code_link = Some(DerivationBase {
                                     code: init_code,
-                                    first: self.table.first_of(init_code),
+                                    first: table.first_of(init_code),
                                 });
+
+                                self.bump_post_initial_code_size();
                             }
                         }
                     }
@@ -908,6 +1002,23 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
         let mut last_decoded: Option<&[u8]> = None;
 
         if self.buffer.buffer().is_empty() {
+            // This is an elaborate way to get codegen to fold two different versions of this
+            // method for two different allocation sizes. At runtime we choose the one applicable.
+            // In the lifecycle of a decoder we first allocate a small one and then only allocate a
+            // big one if enough codes are really decoded in this stream. The goal is to mitigate
+            // the immediate of zeroing the allocations for the Table on construction, delaying the
+            // bigger allocation until needed.
+            //
+            // So what is happening here? We need to satisfy the type checker while having two
+            // different constants actually present. Rust does not allow us to depend on the
+            // generic parameter itself for type algebra in the body so the only way to satisfy it
+            // is by having _both_ paths and then constant folding it away. We can do this by
+            // having the type depend on the const parameter; or by doing both. The former is much
+            // more readable as otherwise we'd have dispatch code at every usage site. As a
+            // tradeoff we must explicitly define the interface we're using of `Table` redundantly
+            // in the trait again.. That's fine? I guess?
+            let table = self.table.use_as::<HAVE_FULL>();
+
             // Hot loop that writes data to the output as long as we can do so directly from the
             // input stream. As an invariant of this block we did not need to use the buffer to
             // store a decoded code word. Testing the condition ahead of time avoids a test in the
@@ -970,10 +1081,10 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
 
                 debug_assert!(
                     // When the table is full, we have a max code above the size switch.
-                    self.table.len >= MAX_ENTRIES - usize::from(self.is_tiff)
+                    table.len() >= MAX_ENTRIES - usize::from(self.is_tiff)
                         || self.code_buffer.max_code() - Code::from(self.is_tiff) >= self.next_code,
                     "Table: {}, code_size: {}, next_code: {}, table_condition: {}",
-                    self.table.is_full(),
+                    table.is_full(),
                     self.code_buffer.code_size(),
                     self.next_code,
                     self.code_buffer.max_code() - Code::from(self.is_tiff),
@@ -1023,7 +1134,7 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                     }
 
                     // Read the code length and check that we can decode directly into the out slice.
-                    let len = self.table.code_len(read_code);
+                    let len = table.code_len(read_code);
 
                     if out.len() < usize::from(len) {
                         break;
@@ -1042,10 +1153,11 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                         let target = out.split_off_first_mut().unwrap();
                         burst_byte[burst_size - 1] = read_code as u8;
                         *target = burst_byte[burst_size - 1];
-                        debug_assert_eq!(1, self.table.depths[read_code as usize]);
+                        debug_assert_eq!(1, table.depths(read_code));
                         last_decoded_bytes = Some(core::slice::from_mut(target));
                     } else {
-                        debug_assert_eq!(len, self.table.depths[read_code as usize]);
+                        debug_assert_eq!(len, table.depths(read_code));
+
                         // If permissible, we do limited *overwrite* into the output buffer to save
                         // a lot of instructions that would be spent on computing exact copy
                         // lengths. That is instead of writing 2 individual bytes for a length 2
@@ -1067,11 +1179,12 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                         if chunked.len() >= usize::from(chunk_len) && slack >= 8 {
                             let relaxed = &mut chunked[..usize::from(chunk_len)];
                             burst_byte[burst_size - 1] =
-                                self.table.reconstruct_simple(read_code, relaxed);
+                                table.reconstruct_simple(read_code, relaxed);
+
                             target = out.split_off_mut(..usize::from(len)).unwrap();
                         } else {
                             target = out.split_off_mut(..usize::from(len)).unwrap();
-                            burst_byte[burst_size - 1] = self.table.reconstruct(read_code, target);
+                            burst_byte[burst_size - 1] = table.reconstruct(read_code, target);
                         }
 
                         last_decoded_bytes = Some(target);
@@ -1083,12 +1196,13 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                 have_yet_to_decode_data = false;
 
                 if !broken_burst {
-                    if !self.table.is_full() {
+                    if !table.is_full() {
                         self.next_code += cnt as u16;
-                        self.table.derive_burst(&mut deriv, codes, &burst_byte[..]);
+                        table.derive_burst(&mut deriv, codes, &burst_byte[..]);
                     }
 
-                    debug_assert!(self.table.is_full() || self.next_code <= size_switch_at);
+                    debug_assert!(table.is_full() || self.next_code <= size_switch_at);
+
                     code_link = Some(DerivationBase {
                         code: burst[cnt - 1],
                         first: burst_byte[cnt - 1],
@@ -1102,9 +1216,9 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                 // end-of-buffer, or an special/invalid code.
                 let (&new_code, burst) = burst[..burst_size].split_last().unwrap();
 
-                if !self.table.is_full() {
+                if !table.is_full() {
                     self.next_code += burst_size as u16 - 1;
-                    self.table.derive_burst(&mut deriv, burst, &burst_byte[..]);
+                    table.derive_burst(&mut deriv, burst, &burst_byte[..]);
                 }
 
                 // Now handle the special codes.
@@ -1134,9 +1248,9 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                 let have_next_code = new_code == self.next_code;
 
                 let required_len = if have_next_code {
-                    self.table.code_len(deriv.code) + 1
+                    table.code_len(deriv.code) + 1
                 } else {
-                    self.table.code_len(new_code)
+                    table.code_len(new_code)
                 };
 
                 // Update the slice holding the last decoded word.
@@ -1164,7 +1278,7 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                     } else {
                         // Restore the decoded word into the buffer.
                         last_decoded = None;
-                        cha = self.buffer.fill_reconstruct(&self.table, new_code);
+                        cha = self.buffer.fill_reconstruct(table, new_code);
                     }
                 } else {
                     let (target, tail) = out.split_at_mut(usize::from(required_len));
@@ -1183,7 +1297,7 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                         target[..source.len()].copy_from_slice(source);
                         target[source.len()..][0] = cha;
                     } else {
-                        cha = self.table.reconstruct(new_code, target);
+                        cha = table.reconstruct(new_code, target);
                     }
 
                     // A new decoded word.
@@ -1192,8 +1306,8 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
 
                 // Each newly read code creates one new code/link based on the preceding code if we
                 // have enough space to put it there.
-                if !self.table.is_full() {
-                    self.table.derive(&deriv, cha);
+                if !table.is_full() {
+                    table.derive(&deriv, cha);
 
                     if self.next_code >= self.code_buffer.max_code() - Code::from(self.is_tiff)
                         && self.code_buffer.code_size() < MAX_CODESIZE
@@ -1219,6 +1333,10 @@ impl<C: CodeBuffer, CgC: CodegenConstants> Stateful for DecodeState<C, CgC> {
                 // Since this test is after decoding at least one code, we can now check for an
                 // empty buffer and still guarantee progress when one was passed as a parameter.
                 if is_in_buffer || out.is_empty() {
+                    break;
+                }
+
+                if !HAVE_FULL && self.code_buffer.code_size() >= 8 {
                     break;
                 }
             }
@@ -1482,7 +1600,7 @@ impl Buffer {
     }
 
     // Fill the buffer by decoding from the table
-    fn fill_reconstruct(&mut self, table: &Table<MAX_ENTRIES>, code: Code) -> u8 {
+    fn fill_reconstruct(&mut self, table: &mut impl TableSizeDispatch, code: Code) -> u8 {
         self.write_mark = 0;
         self.read_mark = 0;
         let depth = table.code_len(code);
@@ -1502,7 +1620,7 @@ impl Buffer {
     }
 }
 
-impl Table<MAX_ENTRIES> {
+impl<const N: usize> Table<N> {
     fn new() -> Self {
         Table {
             suffixes: boxed_arr(),
@@ -1623,6 +1741,21 @@ impl Table<MAX_ENTRIES> {
         first
     }
 
+    fn non_memcpy(out: &mut [u8], from: [u8; STREAMING_Q]) {
+        match out.len() {
+            0 => {}
+            1 => out[0] = from[0],
+            2 => out[..2].copy_from_slice(&from[..2]),
+            3 => out[..3].copy_from_slice(&from[..3]),
+            4 => out[..4].copy_from_slice(&from[..4]),
+            5 => out[..5].copy_from_slice(&from[..5]),
+            6 => out[..6].copy_from_slice(&from[..6]),
+            7 => out[..7].copy_from_slice(&from[..7]),
+            8 => out[..8].copy_from_slice(&from[..8]),
+            _ => unreachable!(),
+        }
+    }
+
     fn reconstruct_simple(&self, code: Code, out: &mut [[u8; 8]]) -> u8 {
         let code_index = usize::from(code) & MASK;
         let suffix = self.suffixes[code_index];
@@ -1654,19 +1787,45 @@ impl Table<MAX_ENTRIES> {
 
         first
     }
+}
 
-    fn non_memcpy(out: &mut [u8], from: [u8; STREAMING_Q]) {
-        match out.len() {
-            0 => {}
-            1 => out[0] = from[0],
-            2 => out[..2].copy_from_slice(&from[..2]),
-            3 => out[..3].copy_from_slice(&from[..3]),
-            4 => out[..4].copy_from_slice(&from[..4]),
-            5 => out[..5].copy_from_slice(&from[..5]),
-            6 => out[..6].copy_from_slice(&from[..6]),
-            7 => out[..7].copy_from_slice(&from[..7]),
-            8 => out[..8].copy_from_slice(&from[..8]),
-            _ => unreachable!(),
+enum DynamicTable {
+    Small(Table<256>),
+    Full(Table<MAX_ENTRIES>),
+}
+
+impl DynamicTable {
+    fn use_as<const N: bool>(&mut self) -> &mut impl TableSizeDispatch
+    where
+        Self: AsSizeDispatch<N>,
+    {
+        AsSizeDispatch::<N>::use_as(self)
+    }
+}
+
+trait AsSizeDispatch<const N: bool> {
+    type Table: TableSizeDispatch;
+    fn use_as(&mut self) -> &mut Self::Table;
+}
+
+impl AsSizeDispatch<false> for DynamicTable {
+    type Table = Table<256>;
+
+    fn use_as(&mut self) -> &mut Self::Table {
+        match self {
+            DynamicTable::Small(tbl) => tbl,
+            DynamicTable::Full(_) => panic!("wrong table selected"),
+        }
+    }
+}
+
+impl AsSizeDispatch<true> for DynamicTable {
+    type Table = Table<MAX_ENTRIES>;
+
+    fn use_as(&mut self) -> &mut Self::Table {
+        match self {
+            DynamicTable::Full(tbl) => tbl,
+            DynamicTable::Small(_) => panic!("wrong table selected"),
         }
     }
 }
@@ -1806,7 +1965,7 @@ mod tests {
 
     #[test]
     fn table_derive() {
-        let mut table = super::Table::new();
+        let mut table = super::Table::<{ super::MAX_ENTRIES }>::new();
         table.init(8);
 
         let mut base = super::DerivationBase {
