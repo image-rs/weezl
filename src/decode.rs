@@ -755,6 +755,11 @@ impl<C: CodeBuffer, CgC: CodegenConstants> DecodeState<C, CgC> {
             return;
         };
 
+        // Optimally we would reallocate the existing entries here but it is somewhat unlikely that
+        // they can be grown without moving the memory around. That would save some minor memory
+        // operations of zero-filling the head.. We need `Allocator::grow_zeroed` however, plus
+        // stable and safe support for it in `Box`, which is rather unlikely to happen anytime soon
+        // (status at Rust 1.95). We're making due with this for now.
         let mut big = Table::<MAX_ENTRIES>::new();
         big.suffixes[..SMALL_ENTRIES].copy_from_slice(&*small.suffixes);
         big.depths[..SMALL_ENTRIES].copy_from_slice(&*small.depths);
