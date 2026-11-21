@@ -71,5 +71,4 @@ impl core::fmt::Display for LzwError {
     }
 }
 
-#[cfg(feature = "std")]
-impl std::error::Error for LzwError {}
+impl core::error::Error for LzwError {}
